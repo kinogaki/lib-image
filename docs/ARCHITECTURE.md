@@ -103,6 +103,11 @@ decoder keeps exact).
 | `compression/piz.rs` | PIZ: value bitmap and dense renumbering, the 14/16-bit Haar wavelet, canonical Huffman over up to 58-bit codes (14-bit lookup table) with a run symbol; the encoder builds real Huffman codes, as OpenEXR does |
 | `compression/pxr24.rs` | PXR24: floats to 24 bits as OpenEXR rounds them, horizontal deltas, byte planes, zlib |
 
+| `cryptomatte/mod.rs` | layer discovery, `Cryptomatte` (ranks as ID/coverage planes moved out of the part, manifest), mattes summed in f64 on every processor, picking, `Matte`, sidecar path checks |
+| `cryptomatte/hash.rs` | MurmurHash3_x86_32 (seed 0), the ID bit remapping, metadata keys |
+| `cryptomatte/manifest.rs` | the bounded strict JSON manifest parser and writer, name and ID indexes |
+| `cryptomatte/builder.rs` | weighted samples per pixel and ID, ranking by weight, the layer's part and file (manifest embedded or sidecar) |
+
 A part's channels are planes over the data window. Reading splits every
 plane into bands (a scanline chunk, or a row of tiles), and each band's
 task owns its rows of every plane: chunks decode in parallel with no copy
@@ -154,3 +159,13 @@ is from the OpenEXR file layout documentation.
 - `tools/exr_oracle.py check DIR` reads the files those tests write
   (`KINOGAKI_EXR_ORACLE_DIR=DIR cargo test -p kinogaki-exr --test
   openexr`) with OpenEXR: 56 files, 348 channels, no mismatch.
+- `crates/exr/tests/cryptomatte.rs`: the specification's hash vectors;
+  luce-exr's builder cases (ranking, duplicate selections, inversion,
+  background, truncation without renormalizing); file and sidecar round
+  trips, refused sidecar paths; and Psyop's three fixtures (five layers,
+  one sidecar manifest, unusual names): all 425 manifest names' mattes
+  match OpenEXR's channels (`expected.txt`, nonzero count and sum, from
+  `tools/cryptomatte_oracle.py expected`). `tools/cryptomatte_oracle.py
+  check DIR` compares every pixel of those 425 mattes
+  (`KINOGAKI_CRYPTOMATTE_ORACLE_DIR=DIR cargo test -p kinogaki-exr --test
+  cryptomatte`): all match within 6e-8.

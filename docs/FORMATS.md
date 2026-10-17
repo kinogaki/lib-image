@@ -54,6 +54,15 @@ Ported from luce-exr 0.6.2, then extended.
   file order, string attributes readable and settable.
 - Conversion to and from the shared interleaved `Image`.
 
+Cryptomatte 1.2 (`kinogaki_exr::cryptomatte`), everything luce-exr had:
+layer discovery, layers of FLOAT quadruples (R/G/B/A in three spellings),
+mattes of names or exact IDs across every rank with inversion, picking by
+ID and name, manifests embedded or in sidecar files (lexically checked
+relative paths, 64 MiB limit), manifest writing, and the weighted-sample
+builder writing a layer (manifest embedded or sidecar). Renderer-side
+sample generation and DCC behaviour stay outside an image library, as in
+luce-exr.
+
 Not supported (as in luce-exr): deep data, mipmap and ripmap levels,
 subsampled channels (x/y sampling other than 1), B44/B44A, DWAA/DWAB and
 the newer HTJ2K and ZSTD compressions.

@@ -33,3 +33,11 @@ it for every input by the tests.
 - `crates/jpeg/tests/fixtures/icc/ladybird-icc-v4.jpg` and
   `ladybird-gradient-empty-icc.jpg` are from Ladybird's test inputs
   (BSD 2-Clause License, `crates/jpeg/tests/fixtures/icc/LICENSE-ladybird`).
+- `crates/exr/tests/fixtures/cryptomatte/multichannel.exr`,
+  `special_chars.exr`, `sidecar_manifest.exr` and
+  `sidecar_manifest.crypto_asset.json` are Psyop's Cryptomatte sample images
+  (github.com/Psyop/Cryptomatte, revision
+  968d5e4b6171e29ba5f89d554117132a164e747e, `sample_images/debug_images/`),
+  BSD 3-Clause, Copyright (c) 2014-2016 Psyop Media Company, LLC; the
+  license is in that directory's `LICENSE`. `expected.txt` there is written
+  by `tools/cryptomatte_oracle.py`.

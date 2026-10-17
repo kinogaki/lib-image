@@ -129,3 +129,18 @@ codes: this one builds real Huffman codes, as OpenEXR does (OpenEXR's own
 PIZ file of the picture: 94.6 MB). At `Level::Balanced` ZIP is 0.5%
 smaller than luce's and, on one thread, 8% slower; `Fast`, the default,
 is 0.5% larger and 1.4× faster.
+
+## Cryptomatte against luce-exr 0.6.2
+
+A 3840×2160 `CryptoObject` layer of six ranks (three FLOAT quadruples,
+2 000 names, ZIP; written by `crates/exr/examples/cryptomatte_bench.rs
+make`), timed by that example and by a luce-exr Base driver
+(`layer_of`/`layer_mask`/`pick`), same machine, quiet:
+
+| | kinogaki | luce |
+| --- | ---: | ---: |
+| open (read, decode, find the layer) | 66.6 ms | 1807 ms |
+| matte of one name | 11.7 ms | 155 ms |
+| matte of ten names | 20.0 ms | 416 ms |
+| 100 000 picks (ID) | 0.1 ms | < 1 ms |
+| 100 000 picks with the name | 1.1 ms | (no name lookup) |

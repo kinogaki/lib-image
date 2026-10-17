@@ -12,7 +12,7 @@ all reading into owned images and writing from them.
 | `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG, EXR's ZIP compression and lib-usd's usdz packages. |
 | `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`) and encode (8/16-bit grey, grey+alpha, RGB, RGBA). |
 | `kinogaki-jpeg` | crates/jpeg | JPEG decode (baseline and progressive, restart markers, any sampling, grey/YCbCr/RGB/CMYK/YCCK, 1/2–1/8 scaled, ICC profiles) and baseline encode (quality, 4:4:4/4:2:2/4:2:0, restart markers, optimized tables), on every processor. |
-| `kinogaki-exr` | crates/exr | OpenEXR read and write: scanline and tiled (one level), multi-part, none/RLE/ZIPS/ZIP/PIZ/PXR24, UINT/HALF/FLOAT channels, every attribute kept; chunks on every processor. |
+| `kinogaki-exr` | crates/exr | OpenEXR read and write: scanline and tiled (one level), multi-part, none/RLE/ZIPS/ZIP/PIZ/PXR24, UINT/HALF/FLOAT channels, every attribute kept; chunks on every processor. Cryptomatte 1.2: layers, mattes by name or ID, picking, embedded and sidecar manifests, a weighted-sample builder. |
 
 ## The image shape
 
@@ -43,6 +43,10 @@ let jpeg = kinogaki_jpeg::encode(&image, &EncodeOptions { quality: 92, ..Default
 let exr = kinogaki_exr::read(&bytes, &kinogaki_exr::ReadOptions::default())?;
 let beauty = exr.parts[0].to_image()?;            // RGBA half or float, interleaved
 let depth = exr.parts[0].channel("Z");            // or any channel's own plane
+
+use kinogaki_exr::cryptomatte::Cryptomatte;
+let layer = Cryptomatte::open(path, "CryptoObject", true)?;
+let hero = layer.extract(&["/obj/hero"], false)?;  // coverage 0..=1 a pixel
 ```
 
 ## Checks
@@ -56,6 +60,6 @@ cargo test --workspace --locked
 Independent oracles (local only, never dependencies): `tools/zlib_oracle.py`
 (Python's zlib), `tools/png_oracle.py` and `tools/jpeg_oracle.py` (Pillow,
 so libjpeg-turbo for JPEG) and `tools/exr_oracle.py` (OpenEXR's Python
-bindings) write the test fixtures and check this library's
+bindings; `tools/cryptomatte_oracle.py` for Cryptomatte) write the test fixtures and check this library's
 output; see docs/ARCHITECTURE.md. What each format leaves out is listed in
 docs/FORMATS.md.

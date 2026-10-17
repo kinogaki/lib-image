@@ -1,4 +1,4 @@
-//! OpenEXR reading and writing.
+//! OpenEXR reading and writing, with Cryptomatte.
 //!
 //! An [`Exr`] is one or more [`Part`]s; a part is a [`Header`] and its
 //! channels, each a plane of samples over the data window (32-bit
@@ -8,7 +8,7 @@
 //! ZIPS, ZIP, PIZ and PXR24; [`write`] writes all of those. Chunks
 //! decompress and compress on every processor. [`Part::to_image`] and
 //! [`Part::from_image`] convert to and from lib-image's interleaved
-//! [`Image`].
+//! [`Image`]. Cryptomatte layers are in [`cryptomatte`].
 //!
 //! ```
 //! use kinogaki_exr::{Compression, Exr, Image, Part, ReadOptions, Samples, WriteOptions};
@@ -19,6 +19,7 @@
 //! assert_eq!(read.parts[0].to_image().unwrap(), image);
 //! ```
 mod compression;
+pub mod cryptomatte;
 mod error;
 mod header;
 mod image;
