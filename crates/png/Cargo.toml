@@ -11,3 +11,4 @@ workspace = true
 
 [dependencies]
 kinogaki-deflate.workspace = true
+kinogaki-image.workspace = true

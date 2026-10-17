@@ -7,8 +7,13 @@ name = "kinogaki-deflate"
 version = "0.1.0"
 
 [[package]]
+name = "kinogaki-image"
+version = "0.1.0"
+
+[[package]]
 name = "kinogaki-png"
 version = "0.1.0"
 dependencies = [
  "kinogaki-deflate",
+ "kinogaki-image",
 ]

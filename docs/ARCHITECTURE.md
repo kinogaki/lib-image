@@ -2,7 +2,15 @@
 
 One Cargo workspace, one crate per format. Owned code forbids `unsafe`
 (workspace lint) and the crates depend on nothing beyond std and each other
-(`kinogaki-png` → `kinogaki-deflate`).
+(`kinogaki-png` → `kinogaki-deflate`, `kinogaki-image`).
+
+## kinogaki-image (crates/image)
+
+| File | Responsibility |
+| --- | --- |
+| `lib.rs` | `Image`, `Samples` (U8, U16, U32, F16 bits, F32), `Image::new` (checked), `to_rgba8` |
+| `half.rs` | binary16 ↔ binary32, exact: every half round-trips, floats round to nearest even (tested over all 65 536 halves and every halfway point) |
+| `srgb.rs` | linear float → sRGB byte by binary search over the 255 code boundaries: exact rounding without a power per sample |
 
 ## kinogaki-deflate (crates/deflate)
 

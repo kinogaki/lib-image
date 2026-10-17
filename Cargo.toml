@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 kinogaki-deflate = { path = "crates/deflate" }
+kinogaki-image = { path = "crates/image" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

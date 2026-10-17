@@ -24,6 +24,7 @@ pub fn encode(image: &Image, level: Level) -> Result<Vec<u8>, Error> {
     let (bytes, depth): (std::borrow::Cow<[u8]>, u8) = match &image.samples {
         Samples::U8(v) => (v.into(), 8),
         Samples::U16(v) => (v.iter().flat_map(|s| s.to_be_bytes()).collect(), 16),
+        Samples::U32(_) | Samples::F16(_) | Samples::F32(_) => return Err(Error::SampleType),
     };
     let bpp = channels * usize::from(depth / 8);
     let row = width as usize * bpp;

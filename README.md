@@ -8,6 +8,7 @@ all reading into owned images and writing from them.
 
 | Crate | Path | What |
 | --- | --- | --- |
+| `kinogaki-image` | crates/image | The shared `Image` (interleaved samples: `U8`, `U16`, `U32`, `F16`, `F32`), exact half-float conversion, `to_rgba8` for display. |
 | `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG, EXR's ZIP compression and lib-usd's usdz packages. |
 | `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`) and encode (8/16-bit grey, grey+alpha, RGB, RGBA). |
 | `kinogaki-jpeg` | crates/jpeg | JPEG (planned: port of luce-jpeg). |
@@ -15,20 +16,23 @@ all reading into owned images and writing from them.
 
 ## The image shape
 
-Every format decodes to an owned image and encodes from one:
+Every format decodes to an owned image and encodes from one
+(`kinogaki-image`, re-exported by each format crate):
 
 ```rust
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub channels: u8,       // interleaved samples per pixel
-    pub samples: Samples,   // Samples::U8(Vec<u8>), Samples::U16(Vec<u16>), ...
+    pub samples: Samples,   // U8, U16, U32, F16 (binary16 bits) or F32
 }
 ```
 
 Samples are interleaved, rows top to bottom, straight (not premultiplied)
-alpha. A format keeps the file's own channel count and sample type where
-it can; `Image::to_rgba8` gives 8-bit RGBA for display.
+alpha. Integer samples are display-referred, float samples scene-linear.
+A format keeps the file's own channel count and sample type where it can;
+`Image::to_rgba8` gives 8-bit RGBA for display (floats through the sRGB
+curve).
 
 ## Checks
 
