@@ -2,7 +2,8 @@
 
 One Cargo workspace, one crate per format. Owned code forbids `unsafe`
 (workspace lint) and the crates depend on nothing beyond std and each other
-(`kinogaki-png` → `kinogaki-deflate`, `kinogaki-image`).
+(`kinogaki-png` → `kinogaki-deflate`, `kinogaki-image`; `kinogaki-jpeg` →
+`kinogaki-image`).
 
 ## kinogaki-image (crates/image)
 
@@ -39,6 +40,52 @@ reads past its end fails as `Truncated` rather than decoding zero bits.
 | `decode.rs` | `decode`: chunk walk with CRC checks, IHDR/PLTE/tRNS/IDAT/IEND, Adam7, sample unpacking; 8-bit RGBA unfilters in the decompressed buffer itself |
 | `filter.rs` | the five filters, Paeth in its threshold form for decoding |
 
+## kinogaki-jpeg (crates/jpeg)
+
+| File | Responsibility |
+| --- | --- |
+| `lib.rs` | `info`, `decode`, `decode_rgba8`, `DecodeOptions`, `Info`; re-exports |
+| `error.rs` | `Error`: `Corrupt { what, at }` (byte offset), `Unsupported`, `Invalid`, `TooLarge` |
+| `headers.rs` | byte reader, markers, frame header, DQT, DHT, scan headers with progressive order checks |
+| `huffman.rs` | decoding tables: 11-bit lookahead; a second table giving run, value and bits used for code plus magnitude together (end of block and zero runs too); the bit reader (64-bit, eight bytes a refill while none is 0xFF, the byte path out of line and by value so the state stays in registers) |
+| `coefficients.rs` | coefficient layouts: MCU order for one-scan baseline frames (any run of MCUs is one slice a thread owns), planes per component otherwise, with each block's nonzero mask for progressive frames |
+| `scan.rs` | entropy decoding: baseline blocks, DC first/refine, AC first/refine (refinement walks the nonzero mask, never every position), restart markers |
+| `idct.rs` | exact float IDCT (even/odd halves over eight lanes); reduced 1/2–1/8 IDCTs as means of the full-size points |
+| `color.rs` | bilinear upsampling at pixel centres (libjpeg's triangle filter at 2:1), JFIF/Adobe color conversion |
+| `render.rs` | the plan (IDCT size, planes, sampling ratios per component) and the band scheduler: IDCT and color tasks on every processor, coefficient bands arriving while workers run |
+| `decode.rs` | the marker walk and the three routes: restart intervals in parallel; one-scan baseline rendered behind its entropy decoding; whole-plane scans then a parallel render |
+| `icc.rs` | APP2 ICC profile joining with libjpeg-turbo's rules |
+| `encode/mod.rs` | encoder API, frame, quantization tables (Annex K scaled as IJG), headers, rows on workers joined in order |
+| `encode/transform.rs` | RGB → YCbCr, edge repetition, chroma averaging, exact float forward DCT, quantization |
+| `encode/entropy.rs` | Annex K Huffman tables, optimal tables (K.2), bit writer, the joiner (word-wide bit shifting, byte stuffing) |
+
+Decoding, in three routes that give the same pixels:
+
+- **One scan with restart intervals** (several threads): the intervals are
+  found by their markers and entropy-decoded in parallel, each into its own
+  slice of MCUs; then the bands render in parallel.
+- **One scan, no restarts**: the calling thread entropy-decodes MCU rows
+  while the other threads run the IDCT and color conversion of finished
+  rows; the coefficients of a band are handed over when its row is done.
+- **Progressive, or several baseline scans**: each scan decodes into whole
+  component planes, then the bands render in parallel.
+
+A color band reads plane rows of the bands either side (vertical
+interpolation), so it waits for their IDCT; workers take the lowest ready
+color band first, else the next IDCT. Encoding: each MCU row is converted,
+transformed and Huffman-coded by a worker into its own bit stream, starting
+from the DC predictors of the row before (it transforms that row's last MCU
+again rather than wait); the calling thread joins the streams in order.
+
+Accuracy: the IDCT is the exact transform to float rounding, upsampling
+keeps fractions (no rounding between upsampling and color conversion), and
+color conversion rounds once. Against libjpeg-turbo (islow, fancy
+upsampling) every fixture is within 4 (mean under 0.4), except 4:1 and 3:2
+chroma which libjpeg replicates and this decoder interpolates. Against
+luce-jpeg's float decoder: 99.97% of 4.5 M fixture samples identical over
+all scales, never more than 2 apart (ties at exact halves, which this
+decoder keeps exact).
+
 ## Tests and oracles
 
 - `crates/deflate/tests/streams.rs`: zlib-made streams (levels 0–9, a 512-byte
@@ -57,3 +104,18 @@ reads past its end fails as `Truncated` rather than decoding zero bits.
   truncations and corruption fail cleanly.
 - `tools/png_oracle.py check DIR` reads this library's PNGs with Pillow
   (`KINOGAKI_PNG_ORACLE_DIR=DIR cargo test -p kinogaki-png --test images`).
+- `crates/jpeg/tests/decode.rs`: the 64 fixtures of luce-jpeg (Pillow, cjpeg
+  and TurboJPEG over synthetic pictures: every sampling, baseline and
+  progressive, grey, RGB, CMYK, YCCK, restarts, multi-thread sizes) decode
+  within 4 of libjpeg-turbo's decodes (`tests/fixtures/reference`, written by
+  `tools/jpeg_oracle.py references`), full size and 1/2, 1/4, 1/8 (180
+  references); thread counts and routes agree byte for byte; every
+  truncation of five files fails as `Corrupt`; 2 400 mutated files never
+  panic; 18 ICC files join as libjpeg-turbo joined them (expected.txt).
+- `crates/jpeg/tests/encode.rs`: sizes 1×1 to 300×200, 1–4 channels, six
+  quality/subsampling cases, restart and optimize on and off decode above
+  PSNR floors; thread counts never change the bytes; optimized tables are
+  smaller; ICC profiles over 64 KB embed and read back.
+- `tools/jpeg_oracle.py check DIR` decodes the encoder tests' files with
+  libjpeg-turbo (`KINOGAKI_JPEG_ORACLE_DIR=DIR cargo test -p kinogaki-jpeg
+  --test encode`): 384/384 decode, PSNR against the source as above.

@@ -11,7 +11,7 @@ all reading into owned images and writing from them.
 | `kinogaki-image` | crates/image | The shared `Image` (interleaved samples: `U8`, `U16`, `U32`, `F16`, `F32`), exact half-float conversion, `to_rgba8` for display. |
 | `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG, EXR's ZIP compression and lib-usd's usdz packages. |
 | `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`) and encode (8/16-bit grey, grey+alpha, RGB, RGBA). |
-| `kinogaki-jpeg` | crates/jpeg | JPEG (planned: port of luce-jpeg). |
+| `kinogaki-jpeg` | crates/jpeg | JPEG decode (baseline and progressive, restart markers, any sampling, grey/YCbCr/RGB/CMYK/YCCK, 1/2–1/8 scaled, ICC profiles) and baseline encode (quality, 4:4:4/4:2:2/4:2:0, restart markers, optimized tables), on every processor. |
 | `kinogaki-exr` | crates/exr | OpenEXR with Cryptomatte (planned: port of luce-exr). |
 
 ## The image shape
@@ -34,6 +34,13 @@ A format keeps the file's own channel count and sample type where it can;
 `Image::to_rgba8` gives 8-bit RGBA for display (floats through the sRGB
 curve).
 
+```rust
+use kinogaki_jpeg::{DecodeOptions, EncodeOptions};
+let image = kinogaki_jpeg::decode_rgba8(&bytes, &DecodeOptions::default())?;
+let thumbnail = kinogaki_jpeg::decode(&bytes, &DecodeOptions { scale: 8, ..Default::default() })?;
+let jpeg = kinogaki_jpeg::encode(&image, &EncodeOptions { quality: 92, ..Default::default() })?;
+```
+
 ## Checks
 
 ```sh
@@ -43,5 +50,7 @@ cargo test --workspace --locked
 ```
 
 Independent oracles (local only, never dependencies): `tools/zlib_oracle.py`
-(Python's zlib) and `tools/png_oracle.py` (Pillow) write the test fixtures
-and check this library's output; see docs/ARCHITECTURE.md.
+(Python's zlib), `tools/png_oracle.py` and `tools/jpeg_oracle.py` (Pillow,
+so libjpeg-turbo for JPEG) write the test fixtures and check this library's
+output; see docs/ARCHITECTURE.md. What each format leaves out is listed in
+docs/FORMATS.md.

@@ -41,3 +41,40 @@ Balanced uses zlib level 6's search parameters (chains of 128, lazy
 matching below 16) and lands within 1.5% of zlib's size. Decoding is the
 png crate's speed or within 10% of it, depending on the filter mix (Paeth
 rows dominate the remaining time).
+
+## JPEG against luce-jpeg 0.10.1
+
+Same machine (Apple M4 Max, 16 cores), both release builds (luce-jpeg's
+`tests/bench.lucb` and `tests/encode.lucb` built with `luce-base build
+--native`; ours `crates/jpeg/examples/bench.rs`), load average 3–15 while
+measuring, each figure the minimum over three interleaved rounds of five
+runs. The pictures: a 6000×4000 (24 MP) photograph re-encoded by Pillow
+(libjpeg-turbo) in each coding; both decoders give RGB bytes.
+
+| Decode | kinogaki, 16 threads | luce, 16 threads | kinogaki, 1 thread | luce, 1 thread |
+| --- | ---: | ---: | ---: | ---: |
+| baseline 4:2:0 q95 (6.7 MB) | 41.2 ms | 53.1 ms | 141.9 ms | 219.7 ms |
+| baseline 4:4:4 q90 (5.8 MB) | 45.3 ms | 58.5 ms | 142.2 ms | 227.5 ms |
+| baseline 4:2:0, restart every MCU row | 20.3 ms | 29.3 ms | 140.7 ms | 220.8 ms |
+| progressive 4:2:0 q95 (5.5 MB) | 75.8 ms | 106.1 ms | 168.1 ms | 263.1 ms |
+| progressive 4:4:4 q90 (5.1 MB) | 95.7 ms | 148.8 ms | 179.9 ms | 306.0 ms |
+| greyscale q90 (4.7 MB) | 28.1 ms | 33.8 ms | 43.4 ms | 115.2 ms |
+
+Baseline decoding without restart markers is bound by the one thread that
+entropy-decodes (the rendering runs behind it on the others); the gain over
+luce there is the Huffman loop (bit-reader state in registers, end of block
+and zero runs in the combined table). Progressive refinement walks each
+block's nonzero mask instead of every coefficient position.
+
+| Encode the 24 MP picture, q90 | kinogaki | luce | kinogaki size | luce size |
+| --- | ---: | ---: | ---: | ---: |
+| 4:4:4 | 17.5 ms | 30.0 ms | 5 810 995 B | 5 818 416 B |
+| 4:2:2 | 12.8 ms | 25.7 ms | 5 396 590 B | 5 398 351 B |
+| 4:2:0 | 11.8 ms | 22.5 ms | 5 188 198 B | 5 191 536 B |
+| 4:2:0, optimized tables | 17.7 ms | 26.6 ms | 4 612 587 B | 4 608 115 B |
+| 4:2:0, restart markers | 11.3 ms | 22.8 ms | 5 188 877 B | 5 192 220 B |
+| 4:2:0, one thread | 143.7 ms | 183.3 ms | | |
+
+Encoded files are within 0.1% of luce's sizes and decode in libjpeg-turbo
+to the PSNR libjpeg-turbo's own encoder reaches on the same source (the
+encoder tests' oracle check).
