@@ -48,12 +48,19 @@ const fn kind(e: u32) -> u32 {
     (e >> KIND_SHIFT) & 7
 }
 
+/// One or two literals (the kind is the count).
+#[inline(always)]
+const fn is_literal(e: u32) -> bool {
+    kind(e).wrapping_sub(LITERAL) < 2
+}
+
 /// Bytes written past a match's end by the eight-byte copies, plus one
 /// match: the output buffer always has this much room beyond `pos`.
 const SLACK: usize = MAX_MATCH + 16;
 
 /// Reads bits from a byte slice, least-significant bit first. Past the end
 /// it reads zero bytes, counting them, so a truncated stream fails cleanly.
+#[derive(Clone, Copy)]
 struct Bits<'a> {
     data: &'a [u8],
     /// The next byte to load.
@@ -74,7 +81,8 @@ impl<'a> Bits<'a> {
 
     /// Loads bytes until at least 56 bits are buffered. The word load also
     /// sets bits above `count`; they are the next bytes' own bits, so a
-    /// later load ORs the same values in.
+    /// later load ORs the same values in. The tail path takes and returns
+    /// the state by value, so a decoding loop keeps it in registers.
     #[inline(always)]
     fn refill(&mut self) {
         if let Some(word) = self.data.get(self.pos..self.pos + 8) {
@@ -84,17 +92,8 @@ impl<'a> Bits<'a> {
             self.pos += taken as usize;
             self.count += taken * 8;
         } else {
-            self.refill_tail();
-        }
-    }
-
-    #[cold]
-    fn refill_tail(&mut self) {
-        while self.count <= 56 {
-            let byte = self.data.get(self.pos).copied().unwrap_or(0);
-            self.buffer |= u64::from(byte) << self.count;
-            self.pos += 1;
-            self.count += 8;
+            (self.pos, self.buffer, self.count) =
+                refill_tail(self.data, self.pos, self.buffer, self.count);
         }
     }
 
@@ -114,8 +113,10 @@ impl<'a> Bits<'a> {
 
     #[inline(always)]
     fn consume(&mut self, n: u32) {
-        self.buffer >>= n;
-        self.count -= n;
+        // n < 64 and n <= count by construction; wrapping keeps overflow
+        // checks out of the decoding loop.
+        self.buffer = self.buffer.wrapping_shr(n);
+        self.count = self.count.wrapping_sub(n);
     }
 
     /// `n` (at most 32) bits; the buffer must hold them.
@@ -158,6 +159,20 @@ impl<'a> Bits<'a> {
         self.consume(e & CONSUMED);
         e
     }
+}
+
+/// [`Bits::refill`] past the last whole word: byte by byte, zeros past the
+/// end (counted by `pos`, so a truncated stream fails its check).
+#[cold]
+#[inline(never)]
+fn refill_tail(data: &[u8], mut pos: usize, mut buffer: u64, mut count: u32) -> (usize, u64, u32) {
+    while count <= 56 {
+        let byte = data.get(pos).copied().unwrap_or(0);
+        buffer |= u64::from(byte) << count;
+        pos += 1;
+        count += 8;
+    }
+    (pos, buffer, count)
 }
 
 /// A Huffman decoding table.
@@ -488,58 +503,94 @@ fn dynamic_tables(bits: &mut Bits) -> Result<(Table, Table), Error> {
     ))
 }
 
-/// Decodes one Huffman block.
+/// Decodes one Huffman block, on a copy of the bit reader kept in
+/// registers.
 fn block(bits: &mut Bits, litlen: &Table, dist: &Table, out: &mut Output) -> Result<(), Error> {
+    let mut local = Bits { ..*bits };
+    let result = block_with(&mut local, litlen, dist, out);
+    *bits = local;
+    result
+}
+
+#[inline(always)]
+fn block_with(
+    bits: &mut Bits,
+    litlen: &Table,
+    dist: &Table,
+    out: &mut Output,
+) -> Result<(), Error> {
     loop {
         out.reserve();
-        // Positions below `end` have room for any symbol in the buffer; the
-        // loop works on locals.
+        // Below `end` there is room in the buffer for any symbol; below
+        // `fast` any symbol also stays within the limit, so the loop there
+        // checks neither (a match is at most 258 bytes, a literal run of
+        // one refill at most four).
         let end = out.buf.len() - SLACK;
+        let fast = end.min(out.limit.saturating_sub(MAX_MATCH));
         let (buf, start, limit) = (&mut out.buf[..], out.start, out.limit);
         let mut pos = out.pos;
+        let lookup = |buffer: u64| litlen.entries[(buffer & litlen.mask) as usize];
+        // The next symbol's first-level entry is loaded ahead: refills only
+        // add bits above those already buffered, so it stays valid.
+        bits.refill();
+        let mut e = lookup(bits.buffer);
         let done = loop {
-            if pos >= end {
+            if pos >= fast {
                 break Ok(false);
             }
-            // 56 buffered bits cover the longest length code with its extra
-            // bits (15 + 5) and distance code with its extra bits (15 + 13).
-            bits.refill();
-            let e = bits.decode(litlen);
-            match kind(e) {
-                LITERAL => {
-                    if pos >= limit {
-                        break Err(Error::TooLarge);
-                    }
+            if is_literal(e) {
+                // Up to three literal entries from the buffer at once, their
+                // lookups independent of the writes; 56 bits cover three
+                // first-level codes (33) and the next lookup.
+                let l1 = e & CONSUMED;
+                let e2 = lookup(bits.buffer >> l1);
+                let l2 = e2 & CONSUMED;
+                let e3 = lookup(bits.buffer >> (l1 + l2));
+                buf[pos] = (e >> 8) as u8;
+                buf[pos + 1] = (e >> 16) as u8;
+                pos += kind(e) as usize;
+                if !is_literal(e2) {
+                    bits.consume(l1);
+                    bits.refill();
+                    e = e2;
+                    continue;
+                }
+                buf[pos] = (e2 >> 8) as u8;
+                buf[pos + 1] = (e2 >> 16) as u8;
+                pos += kind(e2) as usize;
+                if !is_literal(e3) {
+                    bits.consume(l1 + l2);
+                    bits.refill();
+                    e = e3;
+                    continue;
+                }
+                buf[pos] = (e3 >> 8) as u8;
+                buf[pos + 1] = (e3 >> 16) as u8;
+                pos += kind(e3) as usize;
+                bits.consume(l1 + l2 + (e3 & CONSUMED));
+                bits.refill();
+                e = lookup(bits.buffer);
+                continue;
+            }
+            if kind(e) == SUBTABLE {
+                bits.consume(litlen.bits);
+                let sub = (e >> 24) & 0xF;
+                let index = (bits.buffer & ((1 << sub) - 1)) as usize;
+                e = litlen.entries[((e >> 8) & 0xFFFF) as usize + index];
+                if is_literal(e) {
+                    bits.consume(e & CONSUMED);
                     buf[pos] = (e >> 8) as u8;
                     pos += 1;
-                    // Literals usually follow literals: up to three more
-                    // from the same refill (15 + 3 * 11 bits of the 56),
-                    // when their codes resolve in the first-level table.
-                    for _ in 0..3 {
-                        let next = litlen.entries[(bits.buffer & litlen.mask) as usize];
-                        let n = match kind(next) {
-                            LITERAL => 1,
-                            LITERALS => 2,
-                            _ => break,
-                        };
-                        if pos + n > limit {
-                            break;
-                        }
-                        bits.consume(next & CONSUMED);
-                        buf[pos] = (next >> 8) as u8;
-                        buf[pos + 1] = (next >> 16) as u8;
-                        pos += n;
-                    }
+                    bits.refill();
+                    e = lookup(bits.buffer);
+                    continue;
                 }
-                LITERALS => {
-                    if pos + 2 > limit {
-                        break Err(Error::TooLarge);
-                    }
-                    buf[pos] = (e >> 8) as u8;
-                    buf[pos + 1] = (e >> 16) as u8;
-                    pos += 2;
-                }
+            }
+            bits.consume(e & CONSUMED);
+            match kind(e) {
                 BASE => {
+                    // 56 bits less a 15-bit code cover the length's 5 extra
+                    // bits and a distance code (15) with its 13.
                     let length = ((e >> 8) & 0xFFFF) as usize + bits.take((e >> 24) & 0xF) as usize;
                     let d = bits.decode(dist);
                     if kind(d) != BASE {
@@ -549,9 +600,6 @@ fn block(bits: &mut Bits, litlen: &Table, dist: &Table, out: &mut Output) -> Res
                         ((d >> 8) & 0xFFFF) as usize + bits.take((d >> 24) & 0xF) as usize;
                     if distance > pos - start {
                         break Err(Error::Invalid("distance before the start of the stream"));
-                    }
-                    if pos + length > limit {
-                        break Err(Error::TooLarge);
                     }
                     copy_match(buf, pos, distance, length);
                     pos += length;
@@ -564,6 +612,14 @@ fn block(bits: &mut Bits, litlen: &Table, dist: &Table, out: &mut Output) -> Res
             {
                 break Err(e);
             }
+            bits.refill();
+            e = lookup(bits.buffer);
+        };
+        let done = match done {
+            // Near the limit (or the buffer's end): one symbol at a time,
+            // each checked against the limit.
+            Ok(false) if pos < end => careful(bits, litlen, dist, buf, start, limit, &mut pos),
+            other => other,
         };
         out.pos = pos;
         match done {
@@ -572,6 +628,57 @@ fn block(bits: &mut Bits, litlen: &Table, dist: &Table, out: &mut Output) -> Res
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Decodes symbols one at a time with every write checked against
+/// `limit`, until the buffer's end region (`Ok(false)`) or the block's end.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn careful(
+    bits: &mut Bits,
+    litlen: &Table,
+    dist: &Table,
+    buf: &mut [u8],
+    start: usize,
+    limit: usize,
+    pos: &mut usize,
+) -> Result<bool, Error> {
+    let end = buf.len() - SLACK;
+    while *pos < end {
+        bits.refill();
+        let e = bits.decode(litlen);
+        match kind(e) {
+            LITERAL | LITERALS => {
+                let n = if kind(e) == LITERAL { 1 } else { 2 };
+                if *pos + n > limit {
+                    return Err(Error::TooLarge);
+                }
+                buf[*pos] = (e >> 8) as u8;
+                buf[*pos + 1] = (e >> 16) as u8;
+                *pos += n;
+            }
+            BASE => {
+                let length = ((e >> 8) & 0xFFFF) as usize + bits.take((e >> 24) & 0xF) as usize;
+                let d = bits.decode(dist);
+                if kind(d) != BASE {
+                    return Err(Error::Invalid("invalid distance code"));
+                }
+                let distance = ((d >> 8) & 0xFFFF) as usize + bits.take((d >> 24) & 0xF) as usize;
+                if distance > *pos - start {
+                    return Err(Error::Invalid("distance before the start of the stream"));
+                }
+                if *pos + length > limit {
+                    return Err(Error::TooLarge);
+                }
+                copy_match(buf, *pos, distance, length);
+                *pos += length;
+            }
+            END => return Ok(true),
+            _ => return Err(Error::Invalid("invalid literal/length code")),
+        }
+        bits.check()?;
+    }
+    Ok(false)
 }
 
 /// Writes `length` bytes at `pos` copied from `distance` back (they may

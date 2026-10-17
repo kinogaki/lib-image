@@ -18,6 +18,23 @@ crates); its cases are listed so they can be rebuilt.
 | EXR-like ZIP: 3840×2160 half RGBA in 135 blocks of 16 scanlines, bytes split and delta-coded as OpenEXR does, miniz level 6; 29.7 MB → 66.4 MB | 115 ms | 123 ms | 67 ms |
 | Text-like 20 MB, miniz level 6 (1.8 MB) | 9.5 ms | 16.9 ms | 7.1 ms |
 
+2026-10-17, the OpenEXR ZIP chunks of a 3840×2160 eight-channel picture
+(RGBA and normals half, depth float; written by OpenEXR 3.5, 135 chunks of
+16 scanlines, 86 MB → 149 MB), minimum of 15 runs, quiet machine:
+
+| Payload | kinogaki-deflate | miniz_oxide 0.8.9 | fdeflate 0.3.7 |
+| --- | ---: | ---: | ---: |
+| 4K 8-channel EXR, ZIP (before this round) | 313.5 ms | 283.8 ms | 197.3 ms |
+| same, now | 294.8 ms | 283.4 ms | 197.6 ms |
+| same picture, ZIPS (2160 one-scanline chunks) | 302.9 ms | 289.9 ms | 203.3 ms |
+
+The decoding loop keeps the bit reader in registers (its byte-by-byte tail
+takes and returns the state by value), drops limit checks while a whole
+match still fits below the limit, and looks up the next three literal
+codes from one buffer at once. fdeflate is still about 1.5× faster on
+these literal-heavy streams; EXR reads hide most of it by decompressing
+chunks on every processor.
+
 The decoder resolves up to 11 bits per first-level lookup, merges two
 short literal codes into one entry, decodes up to four literals per
 refill, copies matches eight bytes at a time (periods under eight bytes
