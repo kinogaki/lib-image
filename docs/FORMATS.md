@@ -38,3 +38,22 @@ MCU rows at a time), and the luce-raster f64 route.
 
 Not supported (as in luce-jpeg): arithmetic coding, lossless and
 hierarchical JPEG, 12-bit samples, DNL-defined heights.
+
+## OpenEXR (kinogaki-exr)
+
+Ported from luce-exr 0.6.2, then extended.
+
+- Scanline and tiled parts (one level), multi-part files, read and
+  written; increasing, decreasing or random line order read (writes are
+  increasing).
+- Compression, read and written: none, RLE, ZIPS, ZIP, PIZ, PXR24 (luce-exr
+  did not write PXR24).
+- UINT, HALF and FLOAT channels at any data window (negative origins
+  too), the `pLinear` flag, long names.
+- Every header attribute kept: the structural ones typed, the rest raw in
+  file order, string attributes readable and settable.
+- Conversion to and from the shared interleaved `Image`.
+
+Not supported (as in luce-exr): deep data, mipmap and ripmap levels,
+subsampled channels (x/y sampling other than 1), B44/B44A, DWAA/DWAB and
+the newer HTJ2K and ZSTD compressions.

@@ -95,3 +95,37 @@ block's nonzero mask instead of every coefficient position.
 Encoded files are within 0.1% of luce's sizes and decode in libjpeg-turbo
 to the PSNR libjpeg-turbo's own encoder reaches on the same source (the
 encoder tests' oracle check).
+
+## OpenEXR against luce-exr 0.6.2
+
+The 3840×2160 eight-channel picture above (R, G, B, A, N.x, N.y, N.z half,
+Z float; 149 MB raw), written by OpenEXR 3.5 in each compression; both
+release builds on the M4 Max, quiet machine. luce-exr decodes chunk by
+chunk on one thread into f64 samples (its `probe` + `decode_chunk`, a
+driver built with `luce-base build --native`); kinogaki-exr decodes on 16
+threads (and on one) into the channels' own types. Minimum of 3–8 runs.
+
+| Read | kinogaki, 16 threads | kinogaki, 1 thread | luce |
+| --- | ---: | ---: | ---: |
+| none (149 MB) | 4.9 ms | 13.7 ms | 311.6 ms |
+| RLE (107 MB) | 13.6 ms | 136.1 ms | 761.6 ms |
+| ZIPS (87 MB) | 36.1 ms | 411.5 ms | 1000.1 ms |
+| ZIP (86 MB) | 36.9 ms | 405.8 ms | 969.8 ms |
+| PIZ (95 MB) | 44.8 ms | 474.6 ms | 2502.6 ms |
+| PXR24 (72 MB) | 33.1 ms | 356.4 ms | 736.8 ms |
+
+| Write (from the decoded picture) | kinogaki, 16 threads | kinogaki, 1 thread | size | luce | luce size |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| none | 17.3 ms | 50.8 ms | 149.3 MB | 697.6 ms | 149.3 MB |
+| RLE | 28.2 ms | 250.3 ms | 106.8 MB | 1041.3 ms | 106.8 MB |
+| ZIPS, `Level::Fast` (default) | 114.8 ms | 1347.0 ms | 90.4 MB | 1850.0 ms | 89.0 MB |
+| ZIP, `Level::Fast` (default) | 117.7 ms | 1365.7 ms | 88.1 MB | 1890.7 ms | 87.7 MB |
+| ZIP, `Level::Balanced` | 177.5 ms | 2042.5 ms | 87.2 MB | | |
+| PIZ | 94.1 ms | 939.3 ms | 94.5 MB | 2226.3 ms | 126.8 MB |
+| PXR24, `Level::Fast` | 100.2 ms | 1142.7 ms | 73.1 MB | (no writer) | |
+
+PIZ output is 25% smaller than luce's, whose writer used fixed-length
+codes: this one builds real Huffman codes, as OpenEXR does (OpenEXR's own
+PIZ file of the picture: 94.6 MB). At `Level::Balanced` ZIP is 0.5%
+smaller than luce's and, on one thread, 8% slower; `Fast`, the default,
+is 0.5% larger and 1.4× faster.

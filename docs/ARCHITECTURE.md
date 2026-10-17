@@ -3,7 +3,7 @@
 One Cargo workspace, one crate per format. Owned code forbids `unsafe`
 (workspace lint) and the crates depend on nothing beyond std and each other
 (`kinogaki-png` → `kinogaki-deflate`, `kinogaki-image`; `kinogaki-jpeg` →
-`kinogaki-image`).
+`kinogaki-image`; `kinogaki-exr` → `kinogaki-deflate`, `kinogaki-image`).
 
 ## kinogaki-image (crates/image)
 
@@ -86,6 +86,30 @@ luce-jpeg's float decoder: 99.97% of 4.5 M fixture samples identical over
 all scales, never more than 2 apart (ties at exact halves, which this
 decoder keeps exact).
 
+## kinogaki-exr (crates/exr)
+
+| File | Responsibility |
+| --- | --- |
+| `lib.rs` | `Exr`, `Part`, `Header`, `Channel`, `ChannelSamples` (U32, F16 bits, F32 planes), `Window`, `Tiles`, `Compression`, options |
+| `error.rs` | `Error`: `Corrupt { what, at }`, `Unsupported`, `Invalid`, `TooLarge`, `Io` |
+| `header.rs` | magic and version flags, attributes, the channel list, the interpreted attributes (everything else is kept raw, in order), header writing |
+| `read.rs` | headers of every part, offset tables, chunk validation (part number, y or tile coordinates), decoding in bands of rows on every processor straight into the channel planes |
+| `write.rs` | validation, headers, offset tables, chunks built and compressed on every processor, written in increasing y |
+| `image.rs` | `Part::to_image` / `from_image` (RGB(A), Y(A) or a lone channel), sample conversions |
+| `parallel.rs` | thread count and an ordered parallel map |
+| `compression/mod.rs` | chunk codec dispatch; raw-size chunks are stored raw |
+| `compression/zip.rs` | the byte predictor ZIP, ZIPS and RLE share (split halves, deltas); the running sum eight bytes at a time |
+| `compression/rle.rs` | run-length coding |
+| `compression/piz.rs` | PIZ: value bitmap and dense renumbering, the 14/16-bit Haar wavelet, canonical Huffman over up to 58-bit codes (14-bit lookup table) with a run symbol; the encoder builds real Huffman codes, as OpenEXR does |
+| `compression/pxr24.rs` | PXR24: floats to 24 bits as OpenEXR rounds them, horizontal deltas, byte planes, zlib |
+
+A part's channels are planes over the data window. Reading splits every
+plane into bands (a scanline chunk, or a row of tiles), and each band's
+task owns its rows of every plane: chunks decode in parallel with no copy
+after. Writing does the inverse per chunk. PIZ and PXR24 follow OpenEXR's
+algorithms (BSD-3-Clause, `crates/exr/LICENSE-OpenEXR`); every other part
+is from the OpenEXR file layout documentation.
+
 ## Tests and oracles
 
 - `crates/deflate/tests/streams.rs`: zlib-made streams (levels 0–9, a 512-byte
@@ -119,3 +143,14 @@ decoder keeps exact).
 - `tools/jpeg_oracle.py check DIR` decodes the encoder tests' files with
   libjpeg-turbo (`KINOGAKI_JPEG_ORACLE_DIR=DIR cargo test -p kinogaki-jpeg
   --test encode`): 384/384 decode, PSNR against the source as above.
+- `crates/exr/tests/openexr.rs`: 12 files written by OpenEXR 3.5 itself
+  (`tools/exr_oracle.py fixtures`: every compression scanline, four tiled,
+  PIZ with over 16 384 distinct words, a multi-part file) read to exactly
+  the pattern the oracle wrote (PXR24 floats to 24 bits); every
+  compression round-trips scanline and tiled at 1×1, 67×45 and 160×120 on
+  one thread and on all; multi-part, negative data windows, string
+  attributes and names past 31 bytes round-trip; every truncation of six
+  files fails and 1 800 mutated files never panic.
+- `tools/exr_oracle.py check DIR` reads the files those tests write
+  (`KINOGAKI_EXR_ORACLE_DIR=DIR cargo test -p kinogaki-exr --test
+  openexr`) with OpenEXR: 56 files, 348 channels, no mismatch.
