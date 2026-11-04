@@ -7,8 +7,9 @@
 //! every standard PNG — greyscale, truecolor, indexed, with or without
 //! alpha, 1 to 16 bits per sample, interlaced or not, `tRNS` transparency —
 //! keeping the file's channels and sample size; [`encode`] writes any
-//! [`Image`] with a per-row adaptive filter. Color management chunks are
-//! ignored (samples are taken as sRGB). Chunk CRCs and the zlib checksum
+//! [`Image`] with a per-row adaptive filter, [`encode_tagged`] saying which display
+//! its code values are for, [`display_tag`] reading that back; decoding ignores
+//! color management chunks (samples are taken as sRGB). Chunk CRCs and the zlib checksum
 //! are verified.
 //!
 //! ```
@@ -23,8 +24,8 @@ mod decode;
 mod encode;
 mod filter;
 
-pub use decode::decode;
-pub use encode::encode;
+pub use decode::{ReadTag, decode, display_tag};
+pub use encode::{DisplayTag, encode, encode_tagged};
 pub use kinogaki_deflate::Level;
 pub use kinogaki_image::{Image, Samples};
 

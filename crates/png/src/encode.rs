@@ -10,6 +10,29 @@ pub(crate) const MAX_DIMENSION: u32 = (1 << 31) - 1;
 /// smallest sum of magnitudes (libpng's heuristic); `level` sets the
 /// compression effort.
 pub fn encode(image: &Image, level: Level) -> Result<Vec<u8>, Error> {
+    encode_tagged(image, level, None)
+}
+
+/// Which display a PNG's code values are for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisplayTag<'a> {
+    /// sRGB: an `sRGB` chunk.
+    Srgb,
+    /// An ICC profile: an `iCCP` chunk.
+    Icc {
+        /// The profile's name (1 to 79 Latin-1 characters).
+        name: &'a str,
+        /// The profile.
+        profile: &'a [u8],
+    },
+}
+
+/// A PNG of `image` as [`encode`] writes it, saying which display it is for.
+pub fn encode_tagged(
+    image: &Image,
+    level: Level,
+    tag: Option<DisplayTag<'_>>,
+) -> Result<Vec<u8>, Error> {
     let (width, height) = (image.width, image.height);
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(Error::Invalid("image dimensions"));
@@ -61,6 +84,18 @@ pub fn encode(image: &Image, level: Level) -> Result<Vec<u8>, Error> {
     let color = [0, 4, 2, 6][channels - 1];
     header[8..].copy_from_slice(&[depth, color, 0, 0, 0]);
     chunk(&mut png, b"IHDR", &header);
+    match tag {
+        None => {}
+        // Perceptual intent.
+        Some(DisplayTag::Srgb) => chunk(&mut png, b"sRGB", &[0]),
+        Some(DisplayTag::Icc { name, profile }) => {
+            let mut body = name.as_bytes().to_vec();
+            // The name's end; deflate.
+            body.extend([0, 0]);
+            body.extend(zlib_compress(profile, level));
+            chunk(&mut png, b"iCCP", &body);
+        }
+    }
     // A chunk holds less than 2 GiB.
     for piece in data.chunks(1 << 30) {
         chunk(&mut png, b"IDAT", piece);
@@ -77,4 +112,27 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     crc.update(kind);
     crc.update(data);
     out.extend_from_slice(&crc.finish().to_be_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{decode, display_tag};
+
+    #[test]
+    fn a_tag_reads_back_and_leaves_the_pixels() {
+        let image = Image::rgba8(1, 1, vec![1, 2, 3, 4]);
+        let plain = encode(&image, Level::Fast).unwrap();
+        assert_eq!(display_tag(&plain).unwrap(), None);
+        let srgb = encode_tagged(&image, Level::Fast, Some(DisplayTag::Srgb)).unwrap();
+        assert_eq!(display_tag(&srgb).unwrap(), Some(("sRGB".into(), None)));
+        let tag = DisplayTag::Icc {
+            name: "Display P3",
+            profile: &[9; 200],
+        };
+        let icc = encode_tagged(&image, Level::Fast, Some(tag)).unwrap();
+        let expected = Some(("Display P3".into(), Some(vec![9; 200])));
+        assert_eq!(display_tag(&icc).unwrap(), expected);
+        assert_eq!(decode(&icc, 16).unwrap().to_rgba8(), [1, 2, 3, 4]);
+    }
 }

@@ -282,6 +282,37 @@ fn in_place(mut raw: Vec<u8>, row: usize, height: usize, bpp: usize) -> Result<V
     Ok(raw)
 }
 
+/// The largest ICC profile [`display_tag`] inflates.
+const MAX_PROFILE: usize = 1 << 26;
+
+/// A display a PNG says it is for: `sRGB` and no profile, or its `iCCP` profile's
+/// name and bytes.
+pub type ReadTag = (String, Option<Vec<u8>>);
+
+/// What a PNG says about its display, if it does.
+pub fn display_tag(data: &[u8]) -> Result<Option<ReadTag>, Error> {
+    if data.get(..8) != Some(&SIGNATURE[..]) {
+        return Err(Error::Invalid("not a PNG"));
+    }
+    let mut at = 8;
+    while at < data.len() {
+        let (kind, body, next) = chunk(data, at)?;
+        match &kind {
+            b"sRGB" => return Ok(Some(("sRGB".to_owned(), None))),
+            b"iCCP" => {
+                let end = (body.iter().position(|b| *b == 0))
+                    .ok_or(Error::Invalid("iCCP has no name"))?;
+                let name = String::from_utf8_lossy(&body[..end]).into_owned();
+                let packed = body.get(end + 2..).ok_or(Error::Invalid("iCCP length"))?;
+                return Ok(Some((name, Some(zlib_decompress(packed, MAX_PROFILE)?))));
+            }
+            b"IDAT" | b"IEND" => return Ok(None),
+            _ => at = next,
+        }
+    }
+    Ok(None)
+}
+
 /// The chunk at `at`: its type, data and where the next one starts.
 fn chunk(data: &[u8], at: usize) -> Result<([u8; 4], &[u8], usize), Error> {
     let truncated = Error::Invalid("file ends inside a chunk");
