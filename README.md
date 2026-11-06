@@ -9,7 +9,7 @@ all reading into owned images and writing from them.
 | Crate | Path | What |
 | --- | --- | --- |
 | `kinogaki-image` | crates/image | The shared `Image` (interleaved samples: `U8`, `U16`, `U32`, `F16`, `F32`), exact half-float conversion, `to_rgba8` for display. |
-| `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG, EXR's ZIP compression and lib-usd's usdz packages. |
+| `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG and EXR's ZIP compression. |
 | `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`) and encode (8/16-bit grey, grey+alpha, RGB, RGBA). |
 | `kinogaki-jpeg` | crates/jpeg | JPEG decode (baseline and progressive, restart markers, any sampling, grey/YCbCr/RGB/CMYK/YCCK, 1/2–1/8 scaled, ICC profiles) and baseline encode (quality, 4:4:4/4:2:2/4:2:0, restart markers, optimized tables), on every processor. |
 | `kinogaki-exr` | crates/exr | OpenEXR read and write: scanline and tiled (one level), multi-part, none/RLE/ZIPS/ZIP/PIZ/PXR24, UINT/HALF/FLOAT channels, every attribute kept; chunks on every processor. Cryptomatte 1.2: layers, mattes by name or ID, picking, embedded and sidecar manifests, a weighted-sample builder. |
