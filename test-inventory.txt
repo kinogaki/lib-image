@@ -1,0 +1,80 @@
+# Every test of this repository: <package>/<target> <kind> <name>.
+# Written by `python3 tools/check_all.py --inventory`; every check compares its tests with it.
+kinogaki-deflate/doc test crates/deflate/src/lib.rs -
+kinogaki-deflate/lib test checksum::tests::known_values
+kinogaki-deflate/lib test checksum::tests::slicing_matches_bytewise_and_split_updates
+kinogaki-deflate/lib test deflate::tests::common_prefix_counts_across_words
+kinogaki-deflate/lib test deflate::tests::run_length_symbols
+kinogaki-deflate/lib test huffman::tests::canonical_codes
+kinogaki-deflate/lib test huffman::tests::limits_hold_and_codes_stay_complete
+kinogaki-deflate/lib test huffman::tests::optimal_for_small_alphabets
+kinogaki-deflate/lib test inflate::tests::literal_pairs_cover_short_codes
+kinogaki-deflate/lib test inflate::tests::malformed_streams_fail
+kinogaki-deflate/lib test inflate::tests::overlapping_copies
+kinogaki-deflate/lib test inflate::tests::stored_and_fixed_blocks
+kinogaki-deflate/lib test tables::tests::symbol_tables_invert_the_bases
+kinogaki-deflate/streams test compresses_as_well_as_zlib
+kinogaki-deflate/streams test every_truncation_and_corruption_fails_cleanly
+kinogaki-deflate/streams test limits_and_trailing_data
+kinogaki-deflate/streams test round_trips_at_every_level
+kinogaki-deflate/streams test zlib_made_streams_decompress
+kinogaki-exr/cryptomatte test a_built_layer_ranks_picks_and_extracts_across_ranks
+kinogaki-exr/cryptomatte test a_sidecar_that_climbs_out_is_refused
+kinogaki-exr/cryptomatte test bad_samples_are_refused
+kinogaki-exr/cryptomatte test files_and_sidecars_round_trip
+kinogaki-exr/cryptomatte test psyop_fixtures_match_openexr
+kinogaki-exr/doc test crates/exr/src/cryptomatte/mod.rs - cryptomatte
+kinogaki-exr/doc test crates/exr/src/lib.rs -
+kinogaki-exr/lib test compression::piz::tests::huffman_round_trips_with_runs_and_long_codes
+kinogaki-exr/lib test compression::piz::tests::wavelet_round_trips_in_both_ranges
+kinogaki-exr/lib test compression::pxr24::tests::floats_round_to_24_bits
+kinogaki-exr/lib test compression::pxr24::tests::halves_and_uints_are_lossless
+kinogaki-exr/lib test compression::rle::tests::round_trips
+kinogaki-exr/lib test compression::zip::tests::predict_round_trips
+kinogaki-exr/lib test cryptomatte::hash::tests::specification_vectors
+kinogaki-exr/lib test cryptomatte::manifest::tests::escapes_and_surrogates_round_trip
+kinogaki-exr/lib test cryptomatte::manifest::tests::malformed_manifests_are_refused
+kinogaki-exr/openexr test bad_files_fail_cleanly
+kinogaki-exr/openexr test every_compression_round_trips_scanline_and_tiled
+kinogaki-exr/openexr test files_openexr_wrote_read_exactly
+kinogaki-exr/openexr test multipart_files_round_trip
+kinogaki-exr/openexr test windows_attributes_and_long_names_survive
+kinogaki-image/doc test crates/image/src/lib.rs -
+kinogaki-image/lib test half::tests::every_half_round_trips
+kinogaki-image/lib test half::tests::floats_round_to_nearest_even
+kinogaki-image/lib test srgb::tests::matches_the_curve
+kinogaki-image/lib test tests::new_checks_the_sample_count
+kinogaki-image/lib test tests::to_rgba8_spreads_grey_and_encodes_floats
+kinogaki-jpeg/decode test bad_requests_are_refused
+kinogaki-jpeg/decode test every_fixture_decodes_as_libjpeg_turbo_does
+kinogaki-jpeg/decode test icc_profiles_join_as_libjpeg_turbo_joins_them
+kinogaki-jpeg/decode test info_reads_the_frame_header
+kinogaki-jpeg/decode test mutated_files_never_panic
+kinogaki-jpeg/decode test threads_and_layouts_give_the_same_pixels
+kinogaki-jpeg/decode test truncated_files_fail_cleanly
+kinogaki-jpeg/decode test unsupported_codings_say_so
+kinogaki-jpeg/doc test crates/jpeg/src/lib.rs -
+kinogaki-jpeg/encode test an_embedded_icc_profile_reads_back
+kinogaki-jpeg/encode test bad_requests_are_refused
+kinogaki-jpeg/encode test every_option_decodes_close_to_its_source
+kinogaki-jpeg/encode test optimized_tables_are_smaller_and_restarts_decode_in_parallel
+kinogaki-jpeg/encode test threads_never_change_the_bytes
+kinogaki-jpeg/lib test color::tests::models_follow_ids_and_the_adobe_transform
+kinogaki-jpeg/lib test color::tests::two_to_one_is_the_triangle_filter
+kinogaki-jpeg/lib test encode::entropy::tests::joining_shifts_and_stuffs
+kinogaki-jpeg/lib test encode::entropy::tests::optimal_tables_fit_sixteen_bits_and_reserve_all_ones
+kinogaki-jpeg/lib test encode::transform::tests::the_forward_dct_matches_its_definition
+kinogaki-jpeg/lib test huffman::tests::extend_maps_magnitudes_to_signed_values
+kinogaki-jpeg/lib test huffman::tests::oversubscribed_tables_are_refused
+kinogaki-jpeg/lib test huffman::tests::stuffed_bytes_and_markers
+kinogaki-jpeg/lib test idct::tests::matches_the_definition
+kinogaki-jpeg/lib test idct::tests::scaled_points_are_means_of_full_size_points
+kinogaki-png/doc test crates/png/src/lib.rs -
+kinogaki-png/images test bad_input_fails_cleanly
+kinogaki-png/images test every_format_decodes_as_the_specification_says
+kinogaki-png/images test every_layout_round_trips
+kinogaki-png/images test round_trips
+kinogaki-png/lib test encode::tests::a_tag_reads_back_and_leaves_the_pixels
+kinogaki-png/lib test filter::tests::every_filter_inverts
+kinogaki-png/lib test filter::tests::paeth_prefers_a_then_b
+kinogaki-png/lib test filter::tests::the_threshold_form_is_paeth
