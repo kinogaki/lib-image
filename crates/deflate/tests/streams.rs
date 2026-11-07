@@ -32,7 +32,7 @@ fn zlib_made_streams_decompress() {
             count += 1;
         }
     }
-    assert_eq!(count, 11);
+    assert_eq!(count, 13);
 }
 
 fn edge_inputs() -> Vec<Vec<u8>> {
@@ -142,5 +142,242 @@ fn every_truncation_and_corruption_fails_cleanly() {
         bad[at] ^= 1 << ((x >> 29) & 7);
         let _ = zlib_decompress(&bad, 1 << 20);
         let _ = inflate(&bad[2..], 1 << 20);
+    }
+}
+
+/// A raw DEFLATE stream written a block at a time: stored blocks and fixed
+/// Huffman blocks of literals and matches chosen exactly, so a test names
+/// every match a decoder meets.
+#[derive(Default)]
+struct Writer {
+    out: Vec<u8>,
+    bits: u64,
+    count: u32,
+}
+
+/// What a fixed block holds.
+#[derive(Clone, Copy)]
+enum Symbol {
+    Literal(u8),
+    Match { length: usize, distance: usize },
+}
+
+/// RFC 1951 §3.2.5: each length and distance symbol's base and extra bits.
+const LENGTH_BASE: [usize; 29] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
+];
+const LENGTH_EXTRA: [u32; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
+const DIST_BASE: [usize; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+];
+const DIST_EXTRA: [u32; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
+
+impl Writer {
+    /// `n` bits of `value`, least-significant first.
+    fn put(&mut self, value: u32, n: u32) {
+        self.bits |= u64::from(value) << self.count;
+        self.count += n;
+        while self.count >= 8 {
+            self.out.push(self.bits as u8);
+            self.bits >>= 8;
+            self.count -= 8;
+        }
+    }
+
+    /// A Huffman code of `n` bits, most-significant first.
+    fn code(&mut self, code: u32, n: u32) {
+        self.put(code.reverse_bits() >> (32 - n), n);
+    }
+
+    /// Fixed code symbol `symbol` (RFC 1951 §3.2.6).
+    fn fixed_symbol(&mut self, symbol: u32) {
+        match symbol {
+            0..=143 => self.code(0x30 + symbol, 8),
+            144..=255 => self.code(0x190 + symbol - 144, 9),
+            256..=279 => self.code(symbol - 256, 7),
+            _ => self.code(0xC0 + symbol - 280, 8),
+        }
+    }
+
+    fn stored(&mut self, data: &[u8], last: bool) {
+        self.put(u32::from(last), 3);
+        if self.count > 0 {
+            self.put(0, 8 - self.count);
+        }
+        let len = data.len() as u16;
+        self.out.extend_from_slice(&len.to_le_bytes());
+        self.out.extend_from_slice(&(!len).to_le_bytes());
+        self.out.extend_from_slice(data);
+    }
+
+    fn fixed(&mut self, symbols: &[Symbol], last: bool) {
+        self.put(u32::from(last) | 2, 3);
+        for &symbol in symbols {
+            match symbol {
+                Symbol::Literal(byte) => self.fixed_symbol(u32::from(byte)),
+                Symbol::Match { length, distance } => {
+                    let l = LENGTH_BASE.iter().rposition(|&b| b <= length).unwrap();
+                    self.fixed_symbol(257 + l as u32);
+                    self.put((length - LENGTH_BASE[l]) as u32, LENGTH_EXTRA[l]);
+                    let d = DIST_BASE.iter().rposition(|&b| b <= distance).unwrap();
+                    self.code(d as u32, 5);
+                    self.put((distance - DIST_BASE[d]) as u32, DIST_EXTRA[d]);
+                }
+            }
+        }
+        self.fixed_symbol(256);
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.count > 0 {
+            self.put(0, 8 - self.count);
+        }
+        self.out
+    }
+}
+
+/// `history` then `symbols` expanded a byte at a time: what the stream
+/// decodes to.
+fn expand(history: &[u8], symbols: &[Symbol]) -> Vec<u8> {
+    let mut out = history.to_vec();
+    for &symbol in symbols {
+        match symbol {
+            Symbol::Literal(byte) => out.push(byte),
+            Symbol::Match { length, distance } => {
+                for _ in 0..length {
+                    out.push(out[out.len() - distance]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every distance a short period can have, others up to the window's
+/// reach, with every length up to 40 and around each chunk size: as the
+/// stream's last symbol (ending exactly at a limit of its length, and one
+/// byte past one) and followed by literals.
+#[test]
+fn matches_of_every_short_distance_and_length_decode_exactly() {
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let history: Vec<u8> = (0..32_768)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    let distances = (1..=40).chain([63, 64, 65, 255, 256, 257, 1_000, 32_767, 32_768]);
+    for distance in distances {
+        let lengths = (3..=40).chain([63, 64, 65, 127, 128, 129, 255, 256, 257, 258]);
+        for length in lengths {
+            let matched = Symbol::Match { length, distance };
+            for tail in [&[][..], &[Symbol::Literal(7), Symbol::Literal(200)]] {
+                let symbols: Vec<Symbol> =
+                    [matched].into_iter().chain(tail.iter().copied()).collect();
+                let mut w = Writer::default();
+                w.stored(&history[..distance], false);
+                w.fixed(&symbols, true);
+                let stream = w.finish();
+                let expected = expand(&history[..distance], &symbols);
+                let at = format!("distance {distance}, length {length}, {} after", tail.len());
+                assert_eq!(
+                    inflate(&stream, expected.len()).as_ref(),
+                    Ok(&expected),
+                    "{at}"
+                );
+                assert_eq!(inflate(&stream, usize::MAX).as_ref(), Ok(&expected), "{at}");
+                assert_eq!(
+                    inflate(&stream, expected.len() - 1),
+                    Err(Error::TooLarge),
+                    "{at}"
+                );
+            }
+        }
+    }
+}
+
+/// Stored blocks between Huffman blocks, an empty one among them, and
+/// matches reaching back across block boundaries into stored bytes.
+#[test]
+fn stored_and_huffman_blocks_interleave() {
+    let mut w = Writer::default();
+    let first = b"Kinogaki stored bytes";
+    w.stored(first, false);
+    let reach = Symbol::Match {
+        length: 9,
+        distance: first.len(),
+    };
+    let symbols = [Symbol::Literal(b'!'), reach, Symbol::Literal(b'.')];
+    w.fixed(&symbols, false);
+    w.stored(&[], false);
+    w.stored(b"tail", false);
+    let back = Symbol::Match {
+        length: 30,
+        distance: 31,
+    };
+    w.fixed(&[back], true);
+    let stream = w.finish();
+    let mut expected = expand(first, &symbols);
+    expected.extend_from_slice(b"tail");
+    let expected = expand(&expected, &[back]);
+    assert_eq!(inflate(&stream, usize::MAX).as_ref(), Ok(&expected));
+    // What the blocks hold, through the encoder's dynamic blocks.
+    let made = deflate(&expected, Level::Balanced);
+    assert_eq!(inflate(&made, expected.len()), Ok(expected));
+}
+
+/// Seeded data of literals and copies of earlier spans at every reach, at
+/// every level: exact limits, an unknown size (the output grows), and
+/// appended after a caller's bytes, which are no history.
+#[test]
+fn random_streams_round_trip_at_every_level() {
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut random = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    for size in [1, 7, 300, 4_096, 70_000, 400_000] {
+        let mut data = Vec::with_capacity(size);
+        while data.len() < size {
+            if data.len() < 8 || random(3) == 0 {
+                let run = 1 + random(40) as usize;
+                data.extend((0..run).map(|_| random(256) as u8));
+            } else {
+                let distance = 1 + random(data.len().min(40_000) as u64) as usize;
+                for _ in 0..3 + random(300) {
+                    data.push(data[data.len() - distance]);
+                }
+            }
+        }
+        data.truncate(size);
+        for level in LEVELS {
+            let raw = deflate(&data, level);
+            assert_eq!(
+                inflate(&raw, data.len()).as_ref(),
+                Ok(&data),
+                "{size} {level:?}"
+            );
+            assert_eq!(
+                inflate(&raw, usize::MAX).as_ref(),
+                Ok(&data),
+                "{size} {level:?}"
+            );
+            let mut out = b"caller".to_vec();
+            assert_eq!(inflate_into(&raw, &mut out, 6 + data.len()), Ok(raw.len()));
+            assert!(out[6..] == data[..], "{size} {level:?} appended");
+            let z = zlib_compress(&data, level);
+            assert_eq!(zlib_decompress(&z, data.len()).as_ref(), Ok(&data));
+        }
     }
 }

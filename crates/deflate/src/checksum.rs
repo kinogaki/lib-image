@@ -111,7 +111,9 @@ impl Adler32 {
     /// Adds `data`. Sixteen lanes each sum every sixteenth byte (`a`) and
     /// their running sums (`b`), which combine into the block's sums
     /// without a dependency between neighbouring bytes:
-    /// `b += n * a0 + 16 * Σ lane_b - Σ i * lane_a_i`.
+    /// `b += n * a0 + 16 * Σ lane_b - Σ i * lane_a_i`. Within a block no
+    /// lane can overflow; the sums wrap rather than check, so they
+    /// vectorize.
     pub fn update(&mut self, data: &[u8]) {
         let (mut a, mut b) = (self.a, self.b);
         for block in data.chunks(NMAX) {
@@ -120,8 +122,8 @@ impl Adler32 {
             let mut lane_b = [0u32; 16];
             for row in rows {
                 for i in 0..16 {
-                    lane_a[i] += u32::from(row[i]);
-                    lane_b[i] += lane_a[i];
+                    lane_a[i] = lane_a[i].wrapping_add(u32::from(row[i]));
+                    lane_b[i] = lane_b[i].wrapping_add(lane_a[i]);
                 }
             }
             let n = 16 * rows.len() as u64;

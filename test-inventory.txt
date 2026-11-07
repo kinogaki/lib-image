@@ -8,7 +8,7 @@ kinogaki-deflate/lib test deflate::tests::run_length_symbols
 kinogaki-deflate/lib test huffman::tests::canonical_codes
 kinogaki-deflate/lib test huffman::tests::limits_hold_and_codes_stay_complete
 kinogaki-deflate/lib test huffman::tests::optimal_for_small_alphabets
-kinogaki-deflate/lib test inflate::tests::literal_pairs_cover_short_codes
+kinogaki-deflate/lib test inflate::table::tests::tables_decode_every_input_canonically
 kinogaki-deflate/lib test inflate::tests::malformed_streams_fail
 kinogaki-deflate/lib test inflate::tests::overlapping_copies
 kinogaki-deflate/lib test inflate::tests::stored_and_fixed_blocks
@@ -16,7 +16,10 @@ kinogaki-deflate/lib test tables::tests::symbol_tables_invert_the_bases
 kinogaki-deflate/streams test compresses_as_well_as_zlib
 kinogaki-deflate/streams test every_truncation_and_corruption_fails_cleanly
 kinogaki-deflate/streams test limits_and_trailing_data
+kinogaki-deflate/streams test matches_of_every_short_distance_and_length_decode_exactly
+kinogaki-deflate/streams test random_streams_round_trip_at_every_level
 kinogaki-deflate/streams test round_trips_at_every_level
+kinogaki-deflate/streams test stored_and_huffman_blocks_interleave
 kinogaki-deflate/streams test zlib_made_streams_decompress
 kinogaki-image/doc test crates/image/src/lib.rs -
 kinogaki-image/lib test half::tests::every_half_round_trips

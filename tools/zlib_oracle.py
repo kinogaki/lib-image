@@ -2,7 +2,8 @@
 """Independent zlib oracle for kinogaki-deflate.
 
 `fixtures`: writes zlib streams of the shared test inputs made by Python's
-zlib (levels 0 to 9 and raw streams with a 9-bit window) into
+zlib (levels 0 to 9, raw streams with a 9-bit window, and streams of many
+small blocks) into
 crates/deflate/tests/fixtures; the tests decompress them.
 `check DIR`: decompresses every `*.zlib` in DIR with Python's zlib and
 compares it with the `.raw` beside it (the Rust tests write those with
@@ -46,6 +47,9 @@ def fixtures():
         if name != "noise":
             c = zlib.compressobj(9, zlib.DEFLATED, -9, 9, zlib.Z_FILTERED)
             (out / f"{name}-small-window.deflate").write_bytes(c.compress(data) + c.flush())
+            # memLevel 1 ends a block every 128 symbols: many small dynamic blocks.
+            c = zlib.compressobj(6, zlib.DEFLATED, 15, 1)
+            (out / f"{name}-many-blocks.zlib").write_bytes(c.compress(data) + c.flush())
 
 
 def check(directory):
