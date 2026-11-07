@@ -12,7 +12,6 @@ publish = false
 kinogaki-deflate = { path = "crates/deflate" }
 kinogaki-image = { path = "crates/image" }
 kinogaki-png = { path = "crates/png" }
-kinogaki-exr = { path = "crates/exr" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
