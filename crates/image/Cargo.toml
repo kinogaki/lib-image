@@ -3,6 +3,7 @@ name = "kinogaki-image"
 description = "The owned image every Kinogaki image format decodes to and encodes from"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

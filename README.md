@@ -51,3 +51,7 @@ Independent oracles (local only, never dependencies): `tools/zlib_oracle.py`
 (Python's zlib) and `tools/png_oracle.py` (Pillow) write the test fixtures
 and check this library's output; see docs/ARCHITECTURE.md. What PNG leaves
 out is listed in docs/FORMATS.md.
+
+## Licence
+
+MIT OR Apache-2.0, at your option: see LICENSE-MIT and LICENSE-APACHE.
