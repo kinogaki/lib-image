@@ -1,8 +1,9 @@
-//! Reading PNGs into RGBA8.
+//! Reading PNGs: their chunks first ([`Png`]), then their pixels.
 use crate::encode::MAX_DIMENSION;
 use crate::filter;
 use crate::{Error, Image, SIGNATURE, Samples};
-use kinogaki_deflate::{Crc32, zlib_decompress};
+use kinogaki_deflate::{Crc32, zlib_decompress, zlib_decompress_until};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The header's pixel format.
 #[derive(Clone, Copy)]
@@ -74,197 +75,280 @@ const ADAM7: [(usize, usize, usize, usize); 7] = [
 /// its sample size: 16-bit files give [`Samples::U16`], all others
 /// [`Samples::U8`] with 1, 2 and 4-bit samples spread to 0..=255.
 pub fn decode(data: &[u8], max_pixels: u64) -> Result<Image, Error> {
-    if data.get(..8) != Some(&SIGNATURE[..]) {
-        return Err(Error::Signature);
+    let png = Png::read(data)?;
+    if u64::from(png.width()) * u64::from(png.height()) > max_pixels {
+        return Err(Error::TooLarge);
     }
-    let mut at = 8;
-    let mut format = None;
-    let mut palette: Vec<[u8; 4]> = Vec::new();
-    let mut transparency = Transparency::None;
-    let mut compressed = Vec::new();
-    let mut ended = false;
-    let mut idat_done = false;
-    while !ended {
-        let (kind, body, next) = chunk(data, at)?;
-        at = next;
-        match &kind {
-            b"IHDR" => {
-                if format.is_some() || at != 8 + 25 {
-                    return Err(Error::Invalid("IHDR not first"));
-                }
-                let f = header(body)?;
-                if u64::from(f.width) * u64::from(f.height) > max_pixels {
-                    return Err(Error::TooLarge);
-                }
-                format = Some(f);
-            }
-            _ if format.is_none() => return Err(Error::Invalid("IHDR not first")),
-            b"PLTE" => {
-                if body.is_empty() || body.len() % 3 != 0 || body.len() > 256 * 3 {
-                    return Err(Error::Invalid("PLTE length"));
-                }
-                palette = body
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|c| [c[0], c[1], c[2], 255])
-                    .collect();
-            }
-            b"tRNS" => {
-                let f = format.expect("header read");
-                match f.color {
-                    Color::Grey if body.len() == 2 => {
-                        transparency = Transparency::Grey(u16::from_be_bytes([body[0], body[1]]));
+    png.decode(&GO)
+}
+
+/// A stop flag never raised.
+static GO: AtomicBool = AtomicBool::new(false);
+
+/// A PNG read up to its pixels: its header and the chunks saying how to
+/// decode them, CRCs checked and nothing inflated, so a caller sees what
+/// decoding would take ([`inflated`](Self::inflated), the image's size)
+/// before it [`decode`](Self::decode)s.
+pub struct Png<'a> {
+    format: Format,
+    palette: Vec<[u8; 4]>,
+    transparency: Transparency,
+    /// The `IDAT` chunks' data, in order.
+    idat: Vec<&'a [u8]>,
+    /// Each pass: first column and row, steps, columns and rows.
+    passes: Vec<[usize; 6]>,
+    /// Bytes the image data inflates to: every pass's rows, filter bytes
+    /// included.
+    inflated: usize,
+}
+
+impl<'a> Png<'a> {
+    /// The chunks of the PNG `data`, read as far as its pixels. Refused: a
+    /// broken chunk or header, and an image whose sizes overflow memory's
+    /// addresses.
+    pub fn read(data: &'a [u8]) -> Result<Png<'a>, Error> {
+        if data.get(..8) != Some(&SIGNATURE[..]) {
+            return Err(Error::Signature);
+        }
+        let mut at = 8;
+        let mut format = None;
+        let mut palette: Vec<[u8; 4]> = Vec::new();
+        let mut transparency = Transparency::None;
+        let mut idat = Vec::new();
+        let mut ended = false;
+        let mut idat_done = false;
+        while !ended {
+            let (kind, body, next) = chunk(data, at)?;
+            at = next;
+            match &kind {
+                b"IHDR" => {
+                    if format.is_some() || at != 8 + 25 {
+                        return Err(Error::Invalid("IHDR not first"));
                     }
-                    Color::Rgb if body.len() == 6 => {
-                        transparency = Transparency::Rgb([
-                            u16::from_be_bytes([body[0], body[1]]),
-                            u16::from_be_bytes([body[2], body[3]]),
-                            u16::from_be_bytes([body[4], body[5]]),
-                        ]);
+                    format = Some(header(body)?);
+                }
+                _ if format.is_none() => return Err(Error::Invalid("IHDR not first")),
+                b"PLTE" => {
+                    if body.is_empty() || body.len() % 3 != 0 || body.len() > 256 * 3 {
+                        return Err(Error::Invalid("PLTE length"));
                     }
-                    Color::Indexed if body.len() <= palette.len() => {
-                        for (entry, &alpha) in palette.iter_mut().zip(body) {
-                            entry[3] = alpha;
+                    palette = (body.as_chunks::<3>().0.iter())
+                        .map(|c| [c[0], c[1], c[2], 255])
+                        .collect();
+                }
+                b"tRNS" => {
+                    let f = format.expect("header read");
+                    match f.color {
+                        Color::Grey if body.len() == 2 => {
+                            transparency =
+                                Transparency::Grey(u16::from_be_bytes([body[0], body[1]]));
                         }
+                        Color::Rgb if body.len() == 6 => {
+                            transparency = Transparency::Rgb([
+                                u16::from_be_bytes([body[0], body[1]]),
+                                u16::from_be_bytes([body[2], body[3]]),
+                                u16::from_be_bytes([body[4], body[5]]),
+                            ]);
+                        }
+                        Color::Indexed if body.len() <= palette.len() => {
+                            for (entry, &alpha) in palette.iter_mut().zip(body) {
+                                entry[3] = alpha;
+                            }
+                        }
+                        _ => return Err(Error::Invalid("tRNS for this color type")),
                     }
-                    _ => return Err(Error::Invalid("tRNS for this color type")),
+                }
+                b"IDAT" => {
+                    if idat_done {
+                        return Err(Error::Invalid("IDAT chunks not consecutive"));
+                    }
+                    idat.push(body);
+                }
+                b"IEND" => ended = true,
+                _ => {
+                    if kind[0] & 0x20 == 0 {
+                        return Err(Error::Invalid("unknown critical chunk"));
+                    }
                 }
             }
-            b"IDAT" => {
-                if idat_done {
-                    return Err(Error::Invalid("IDAT chunks not consecutive"));
-                }
-                compressed.extend_from_slice(body);
-            }
-            b"IEND" => ended = true,
-            _ => {
-                if kind[0] & 0x20 == 0 {
-                    return Err(Error::Invalid("unknown critical chunk"));
-                }
+            if !idat.is_empty() && &kind != b"IDAT" {
+                idat_done = true;
             }
         }
-        if !compressed.is_empty() && &kind != b"IDAT" {
-            idat_done = true;
+        let format = format.expect("header read");
+        if idat.iter().all(|d| d.is_empty()) {
+            return Err(Error::Invalid("no IDAT"));
         }
-    }
-    let format = format.expect("header read");
-    if compressed.is_empty() {
-        return Err(Error::Invalid("no IDAT"));
-    }
-    if format.color == Color::Indexed && palette.is_empty() {
-        return Err(Error::Invalid("indexed image without PLTE"));
-    }
-    let (w, h) = (format.width as usize, format.height as usize);
-    let passes: Vec<(usize, usize, usize, usize, usize, usize)> = if format.interlaced {
-        ADAM7
-            .iter()
-            .map(|&(x0, y0, dx, dy)| {
-                (
-                    x0,
-                    y0,
-                    dx,
-                    dy,
-                    (w.saturating_sub(x0)).div_ceil(dx),
-                    (h.saturating_sub(y0)).div_ceil(dy),
-                )
-            })
-            .filter(|p| p.4 > 0 && p.5 > 0)
-            .collect()
-    } else {
-        vec![(0, 0, 1, 1, w, h)]
-    };
-    let expected: usize = passes
-        .iter()
-        .map(|p| (format.row_bytes(p.4) + 1) * p.5)
-        .sum();
-    let mut raw = zlib_decompress(&compressed, expected)?;
-    if raw.len() != expected {
-        return Err(Error::Invalid("image data too short"));
-    }
-    let alpha = match format.color {
-        Color::GreyAlpha | Color::Rgba => true,
-        Color::Grey | Color::Rgb => !matches!(transparency, Transparency::None),
-        Color::Indexed => palette.iter().any(|p| p[3] != 255),
-    };
-    let channels = match format.color {
-        Color::Grey | Color::GreyAlpha => 1,
-        Color::Rgb | Color::Rgba | Color::Indexed => 3,
-    } + u8::from(alpha);
-    let wide = format.depth == 16;
-    // Rows that already are the image's layout unfilter in the decompressed
-    // buffer itself, which then becomes the image.
-    if !format.interlaced
-        && format.depth >= 8
-        && format.color != Color::Indexed
-        && usize::from(channels) == format.color.samples()
-    {
-        let bytes = in_place(raw, format.row_bytes(w), h, format.filter_bpp())?;
-        let samples = if wide {
-            Samples::U16(
-                bytes
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|&pair| u16::from_be_bytes(pair))
-                    .collect(),
-            )
-        } else {
-            Samples::U8(bytes)
+        if format.color == Color::Indexed && palette.is_empty() {
+            return Err(Error::Invalid("indexed image without PLTE"));
+        }
+        let (w, h) = (format.width as usize, format.height as usize);
+        let passes: Vec<[usize; 6]> = match format.interlaced {
+            true => (ADAM7.iter())
+                .map(|&(x0, y0, dx, dy)| {
+                    let across = w.saturating_sub(x0).div_ceil(dx);
+                    [x0, y0, dx, dy, across, h.saturating_sub(y0).div_ceil(dy)]
+                })
+                .filter(|p| p[4] > 0 && p[5] > 0)
+                .collect(),
+            false => vec![[0, 0, 1, 1, w, h]],
         };
-        return Ok(Image {
+        // At most 2³¹ rows of 2³¹ pixels of 64 bits: checked, as a hostile
+        // header names such sizes.
+        let inflated = passes.iter().try_fold(0usize, |sum, p| {
+            let row = format.row_bytes(p[4]).checked_add(1)?;
+            sum.checked_add(row.checked_mul(p[5])?)
+        });
+        let decoded = w
+            .checked_mul(h)
+            .and_then(|pixels| pixels.checked_mul(4 * 2));
+        let (Some(inflated), Some(_)) = (inflated, decoded) else {
+            return Err(Error::TooLarge);
+        };
+        Ok(Png {
+            format,
+            palette,
+            transparency,
+            idat,
+            passes,
+            inflated,
+        })
+    }
+
+    /// Pixels across.
+    pub fn width(&self) -> u32 {
+        self.format.width
+    }
+
+    /// Pixels down.
+    pub fn height(&self) -> u32 {
+        self.format.height
+    }
+
+    /// The decoded image's channels: 1 to 4.
+    pub fn channels(&self) -> u8 {
+        let alpha = match self.format.color {
+            Color::GreyAlpha | Color::Rgba => true,
+            Color::Grey | Color::Rgb => !matches!(self.transparency, Transparency::None),
+            Color::Indexed => self.palette.iter().any(|p| p[3] != 255),
+        };
+        let colors = match self.format.color {
+            Color::Grey | Color::GreyAlpha => 1,
+            Color::Rgb | Color::Rgba | Color::Indexed => 3,
+        };
+        colors + u8::from(alpha)
+    }
+
+    /// Whether its samples are 16-bit ([`Samples::U16`]), else 8-bit.
+    pub fn wide(&self) -> bool {
+        self.format.depth == 16
+    }
+
+    /// Bytes of compressed image data.
+    pub fn compressed(&self) -> usize {
+        self.idat.iter().map(|d| d.len()).sum()
+    }
+
+    /// Bytes the image data inflates to: its rows, each with its filter
+    /// byte.
+    pub fn inflated(&self) -> usize {
+        self.inflated
+    }
+
+    /// The image, as [`decode`] gives it; [`Error::Stopped`] once `stop` is
+    /// raised.
+    pub fn decode(&self, stop: &AtomicBool) -> Result<Image, Error> {
+        let format = self.format;
+        let compressed = self.idat.concat();
+        let mut raw = zlib_decompress_until(&compressed, self.inflated, stop)?;
+        drop(compressed);
+        if raw.len() != self.inflated {
+            return Err(Error::Invalid("image data too short"));
+        }
+        let channels = self.channels();
+        let wide = self.wide();
+        let (w, h) = (format.width as usize, format.height as usize);
+        // Rows that already are the image's layout unfilter in the
+        // decompressed buffer itself, which then becomes the image.
+        if !format.interlaced
+            && format.depth >= 8
+            && format.color != Color::Indexed
+            && usize::from(channels) == format.color.samples()
+        {
+            let bytes = in_place(raw, format.row_bytes(w), h, format.filter_bpp(), stop)?;
+            let samples = match wide {
+                true => Samples::U16(
+                    (bytes.as_chunks::<2>().0.iter())
+                        .map(|&pair| u16::from_be_bytes(pair))
+                        .collect(),
+                ),
+                false => Samples::U8(bytes),
+            };
+            return Ok(Image {
+                width: format.width,
+                height: format.height,
+                channels,
+                samples,
+            });
+        }
+        let n = usize::from(channels);
+        let mut out = vec![0u16; w * h * n];
+        let bpp = format.filter_bpp();
+        let mut offset = 0;
+        for &[x0, y0, dx, dy, pw, ph] in &self.passes {
+            let row = format.row_bytes(pw);
+            let zeros = vec![0u8; row];
+            for py in 0..ph {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(Error::Stopped);
+                }
+                // Unfilter in place against the row above, already unfiltered.
+                let (done, rest) = raw.split_at_mut(offset);
+                let previous = if py == 0 {
+                    &zeros[..]
+                } else {
+                    &done[offset - row..]
+                };
+                let (kind, current) = (rest[0], &mut rest[1..row + 1]);
+                filter::unfilter(kind, current, previous, bpp)
+                    .map_err(|()| Error::Invalid("filter type"))?;
+                let current = &raw[offset + 1..offset + 1 + row];
+                offset += row + 1;
+                let y = y0 + py * dy;
+                for px in 0..pw {
+                    let at = ((y * w) + x0 + px * dx) * n;
+                    let pixel = convert(format, current, px, &self.palette, &self.transparency)?;
+                    out[at..at + n].copy_from_slice(&pixel[..n]);
+                }
+            }
+        }
+        let samples = match wide {
+            true => Samples::U16(out),
+            false => Samples::U8(out.into_iter().map(|v| v as u8).collect()),
+        };
+        Ok(Image {
             width: format.width,
             height: format.height,
             channels,
             samples,
-        });
+        })
     }
-    let n = usize::from(channels);
-    let mut out = vec![0u16; w * h * n];
-    let bpp = format.filter_bpp();
-    let mut offset = 0;
-    for &(x0, y0, dx, dy, pw, ph) in &passes {
-        let row = format.row_bytes(pw);
-        let zeros = vec![0u8; row];
-        for py in 0..ph {
-            // Unfilter in place against the row above, already unfiltered.
-            let (done, rest) = raw.split_at_mut(offset);
-            let previous = if py == 0 {
-                &zeros[..]
-            } else {
-                &done[offset - row..]
-            };
-            let (kind, current) = (rest[0], &mut rest[1..row + 1]);
-            filter::unfilter(kind, current, previous, bpp)
-                .map_err(|()| Error::Invalid("filter type"))?;
-            let current = &raw[offset + 1..offset + 1 + row];
-            offset += row + 1;
-            let y = y0 + py * dy;
-            for px in 0..pw {
-                let at = ((y * w) + x0 + px * dx) * n;
-                let pixel = convert(format, current, px, &palette, &transparency)?;
-                out[at..at + n].copy_from_slice(&pixel[..n]);
-            }
-        }
-    }
-    let samples = if wide {
-        Samples::U16(out)
-    } else {
-        Samples::U8(out.into_iter().map(|v| v as u8).collect())
-    };
-    Ok(Image {
-        width: format.width,
-        height: format.height,
-        channels,
-        samples,
-    })
 }
 
 /// Unfilters rows in the decompressed buffer itself and closes up the
 /// filter bytes, so the buffer becomes the image (no second one).
-fn in_place(mut raw: Vec<u8>, row: usize, height: usize, bpp: usize) -> Result<Vec<u8>, Error> {
+fn in_place(
+    mut raw: Vec<u8>,
+    row: usize,
+    height: usize,
+    bpp: usize,
+    stop: &AtomicBool,
+) -> Result<Vec<u8>, Error> {
     let zeros = vec![0u8; row];
     for y in 0..height {
+        if stop.load(Ordering::Relaxed) {
+            return Err(Error::Stopped);
+        }
         let source = y * (row + 1) + 1;
         // Row y - 1 is already unfiltered and moved down to (y - 1) * row,
         // below `source`.

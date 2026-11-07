@@ -10,12 +10,20 @@
 //! base. A dynamic block's tables are built in place, the first level
 //! doubled a code length at a time. Output goes into a buffer kept a match
 //! plus a chunk longer than what is written, so matches copy whole chunks.
+//!
+//! A hostile stream is refused rather than followed: one that ends early
+//! fails within a few bytes of its end (past it, the reader supplies zero
+//! bits, which would otherwise decode on up to the caller's limit), output
+//! never passes [`MAX_RATIO`] bytes for each byte of input (no valid stream
+//! gives more), and a raised stop flag ends the work within a megabyte of
+//! output.
 mod bits;
 mod table;
 
 use crate::Error;
 use crate::tables::{CODE_LENGTH_ORDER, END_OF_BLOCK, MAX_MATCH};
 use bits::Bits;
+use std::sync::atomic::{AtomicBool, Ordering};
 use table::{
     CODE_LENGTH_BITS, DIST_BITS, EXCEPTIONAL, LITERAL, LITLEN_BITS, SUBTABLE, Table, fixed_tables,
     is_end, sub_index,
@@ -24,6 +32,14 @@ use table::{
 /// Bytes written past a match's end by whole-chunk copies, plus one
 /// match: the output buffer always has this much room beyond `pos`.
 const SLACK: usize = MAX_MATCH + 16;
+
+/// The most bytes a DEFLATE stream gives for each of its bytes: a match
+/// of 258 bytes coded in two bits (a one-bit length code and a one-bit
+/// distance code), four to a byte.
+pub(crate) const MAX_RATIO: usize = 1032;
+
+/// Bytes decoded between two looks at the stop flag.
+const POLL: usize = 1 << 20;
 
 /// From this size on, output buffers are fresh zeroed allocations (the
 /// system's zero pages, measured faster than writing zeros); smaller ones
@@ -75,9 +91,17 @@ impl Output<'_> {
 
 /// Decompresses the raw DEFLATE stream at the start of `data`, appending to
 /// `out` (whose earlier bytes are not history). Fails if `out` would grow
-/// past `limit` bytes. Returns the bytes of `data` the stream used.
-pub fn inflate_into(data: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, Error> {
+/// past `limit` bytes, or past [`MAX_RATIO`] bytes for each byte of `data`,
+/// and stops once `stop` is raised. Returns the bytes of `data` the stream
+/// used.
+pub fn inflate_into(
+    data: &[u8],
+    out: &mut Vec<u8>,
+    limit: usize,
+    stop: &AtomicBool,
+) -> Result<usize, Error> {
     let start = out.len();
+    let limit = limit.min(start.saturating_add(data.len().saturating_mul(MAX_RATIO)));
     // A first guess at the size: the limit itself when it is near enough
     // to be the caller's exact size (PNG, EXR and ZIP know it), else four
     // times the input, bounded by the limit.
@@ -99,16 +123,17 @@ pub fn inflate_into(data: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usiz
         start,
         limit,
     };
-    let result = blocks(data, &mut output);
+    let result = blocks(data, &mut output, stop);
     let pos = output.pos;
     out.truncate(pos);
     result
 }
 
-fn blocks(data: &[u8], out: &mut Output) -> Result<usize, Error> {
+fn blocks(data: &[u8], out: &mut Output, stop: &AtomicBool) -> Result<usize, Error> {
     let mut bits = Bits::new(data);
     let mut dynamic = Dynamic::default();
     loop {
+        stopped(stop)?;
         bits.refill();
         let last = bits.take(1) == 1;
         match bits.take(2) {
@@ -135,11 +160,11 @@ fn blocks(data: &[u8], out: &mut Output) -> Result<usize, Error> {
             }
             1 => {
                 let (litlen, dist) = fixed_tables();
-                block(&mut bits, litlen, dist, out)?;
+                block(&mut bits, litlen, dist, out, stop)?;
             }
             2 => {
                 dynamic.read(&mut bits)?;
-                block(&mut bits, &dynamic.litlen, &dynamic.dist, out)?;
+                block(&mut bits, &dynamic.litlen, &dynamic.dist, out, stop)?;
             }
             _ => return Err(Error::Invalid("reserved block type")),
         }
@@ -149,6 +174,15 @@ fn blocks(data: &[u8], out: &mut Output) -> Result<usize, Error> {
         }
     }
     Ok(bits.consumed_bits().div_ceil(8))
+}
+
+/// `Err(Stopped)` once `stop` is raised.
+#[inline]
+fn stopped(stop: &AtomicBool) -> Result<(), Error> {
+    match stop.load(Ordering::Relaxed) {
+        true => Err(Error::Stopped),
+        false => Ok(()),
+    }
 }
 
 /// A dynamic block's tables, built again in place for each block.
@@ -212,9 +246,15 @@ impl Dynamic {
 
 /// Decodes one Huffman block, on a copy of the bit reader kept in
 /// registers.
-fn block(bits: &mut Bits, litlen: &Table, dist: &Table, out: &mut Output) -> Result<(), Error> {
+fn block(
+    bits: &mut Bits,
+    litlen: &Table,
+    dist: &Table,
+    out: &mut Output,
+    stop: &AtomicBool,
+) -> Result<(), Error> {
     let mut local = Bits { ..*bits };
-    let result = block_with(&mut local, litlen, dist, out);
+    let result = block_with(&mut local, litlen, dist, out, stop);
     *bits = local;
     result
 }
@@ -225,17 +265,24 @@ fn block_with(
     litlen: &Table,
     dist: &Table,
     out: &mut Output,
+    stop: &AtomicBool,
 ) -> Result<(), Error> {
     let first: &[u32; 1 << LITLEN_BITS] = litlen.first();
     let dist_first: &[u32; 1 << DIST_BITS] = dist.first();
     let lookup = |buffer: u64| first[(buffer & ((1 << LITLEN_BITS) - 1)) as usize];
+    // Past this the reader has supplied zero bytes of its own: the stream
+    // ended early (its check then says so).
+    let past = bits.data.len() + 8;
     loop {
+        stopped(stop)?;
         out.reserve();
         // Below `end` there is room in the buffer for any symbol; below
         // `fast` any symbol also stays within the limit, so the loop there
-        // checks neither (a match is at most 258 bytes).
+        // checks neither (a match is at most 258 bytes). It pauses at
+        // `pause` to look at the stop flag.
         let end = out.buf.len() - SLACK;
         let fast = end.min(out.limit.saturating_sub(MAX_MATCH));
+        let pause = fast.min(out.pos.saturating_add(POLL));
         let (buf, start, limit) = (&mut out.buf[..], out.start, out.limit);
         let mut pos = out.pos;
         // The next symbol's entry is looked up ahead, the buffer holding at
@@ -244,7 +291,7 @@ fn block_with(
         bits.refill();
         let mut e = lookup(bits.buffer);
         let done = loop {
-            if pos >= fast {
+            if pos >= pause || bits.pos > past {
                 break Ok(false);
             }
             if e & LITERAL != 0 {
@@ -318,8 +365,11 @@ fn block_with(
             break Err(Error::Invalid("invalid literal/length code"));
         };
         let done = match done {
-            // Near the limit (or the buffer's end): one symbol at a time,
-            // each checked against the limit.
+            // Paused to look at the stop flag: on with the fast loop.
+            Ok(false) if pos >= pause && pause < fast => Ok(false),
+            // Near the limit (or the buffer's end), or past the input: one
+            // symbol at a time, each checked against the limit and the
+            // input's end.
             Ok(false) if pos < end => careful(bits, litlen, dist, buf, start, limit, &mut pos),
             other => other,
         };
@@ -444,7 +494,7 @@ mod tests {
 
     fn inflate(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut out = Vec::new();
-        inflate_into(data, &mut out, usize::MAX).map(|_| out)
+        inflate_into(data, &mut out, usize::MAX, &AtomicBool::new(false)).map(|_| out)
     }
 
     #[test]
@@ -482,9 +532,14 @@ mod tests {
             Err(Error::Invalid("distance before the start of the stream"))
         );
         let mut out = Vec::new();
+        let go = AtomicBool::new(false);
         assert_eq!(
-            inflate_into(&[0x4B, 0x4C, 0x84, 0x01, 0x00], &mut out, 9),
+            inflate_into(&[0x4B, 0x4C, 0x84, 0x01, 0x00], &mut out, 9, &go),
             Err(Error::TooLarge)
+        );
+        assert_eq!(
+            inflate_into(&[0x03, 0x00], &mut out, 9, &AtomicBool::new(true)),
+            Err(Error::Stopped)
         );
     }
 

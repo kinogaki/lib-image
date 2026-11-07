@@ -31,8 +31,15 @@ Levels: `Fast` (chain 4, no lazy matching), `Balanced` (chain 128, lazy
 below 16, nice 128: zlib level 6's parameters), `Small` (chain 2048, full
 lazy matching).
 
-Decoding is bounded: every call takes an output limit, and a stream that
-reads past its end fails as `Truncated` rather than decoding zero bits.
+Decoding is bounded, since a stream may be hostile: every call takes an
+output limit; a stream that reads past its end fails as `Truncated` within
+a few bytes of its end rather than decoding the zero bits the reader
+supplies there (the fast loop stops once the reader is eight bytes past
+the input, and the careful one checks every symbol); output never passes
+1032 bytes for each byte of input, the most DEFLATE codes (a 258-byte match
+in two bits), so a claimed size larger than that is `TooLarge` at once; and
+`zlib_decompress_until` stops with `Stopped` once its caller's flag is
+raised, looked at every block and every megabyte of output.
 
 ## kinogaki-png (crates/png)
 
@@ -40,7 +47,7 @@ reads past its end fails as `Truncated` rather than decoding zero bits.
 | --- | --- |
 | `lib.rs` | `Image`, `Samples`, `Error`, `Image::to_rgba8` |
 | `encode.rs` | `encode`: one IDAT, adaptive per-row filter (libpng's minimum sum of magnitudes) |
-| `decode.rs` | `decode`: chunk walk with CRC checks, IHDR/PLTE/tRNS/IDAT/IEND, Adam7, sample unpacking; 8-bit RGBA unfilters in the decompressed buffer itself |
+| `decode.rs` | `Png::read`: chunk walk with CRC checks, IHDR/PLTE/tRNS/IDAT/IEND, the sizes decoding takes (checked against overflow) before anything is inflated; `Png::decode`: Adam7, sample unpacking, a stop flag looked at every row; 8-bit RGBA unfilters in the decompressed buffer itself; `decode` both at once, under a pixel limit |
 | `filter.rs` | the five filters, Paeth in its threshold form for decoding |
 
 ## Tests and oracles
@@ -55,7 +62,11 @@ reads past its end fails as `Truncated` rather than decoding zero bits.
   exactly its limit, and one byte short) or followed by literals; stored
   blocks between fixed blocks, matches reaching across them; output within
   10% of zlib's size at levels 1/6/9; every truncation and 20 000 bit flips
-  fail cleanly.
+  fail cleanly; hostile dynamic blocks: one whose all-zero code is a literal,
+  cut after its header, fails `Truncated` having written under a kilobyte (it
+  once decoded zeros up to the caller's limit), and one of two-bit 258-byte
+  matches, DEFLATE's most output a byte, decodes whole; a raised stop flag
+  ends a decode.
 - `inflate/table.rs`'s unit tests: every 15-bit input decodes, through both table
   levels, to the canonical code it starts with, for the fixed codes, a lone
   one-bit code and random complete codes up to 15 bits.
@@ -67,6 +78,8 @@ reads past its end fails as `Truncated` rather than decoding zero bits.
   `tools/png_oracle.py`, filters cycling through all five types, IDAT split
   over chunks, tRNS where allowed) decodes to the RGBA the specification
   gives; 5 Pillow-written files decode as Pillow reads them; round trips;
-  truncations and corruption fail cleanly.
+  truncations and corruption fail cleanly; `Png::read` says what decoding
+  takes before it starts, sizes past memory's addresses are refused there,
+  and a raised stop flag ends a decode.
 - `tools/png_oracle.py check DIR` reads this library's PNGs with Pillow
   (`KINOGAKI_PNG_ORACLE_DIR=DIR cargo test -p kinogaki-png --test images`).

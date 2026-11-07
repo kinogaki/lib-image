@@ -381,3 +381,105 @@ fn random_streams_round_trip_at_every_level() {
         }
     }
 }
+
+/// A final dynamic block's header whose codes are given by the lengths of
+/// literal/length symbols `litlen` (up to symbol `count - 1`) and of one
+/// distance code: every code-length symbol a run of zeros (18) or a length
+/// of 1 or 2, coded `18: 0, 1: 10, 2: 11`.
+fn dynamic_header(litlen: &[(usize, u32)], count: usize) -> Writer {
+    let mut w = Writer::default();
+    w.put(1, 1);
+    w.put(2, 2);
+    w.put(count as u32 - 257, 5);
+    w.put(0, 5);
+    // Code-length code lengths in RFC 1951's order, up to symbol 1.
+    let order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1];
+    w.put(order.len() as u32 - 4, 4);
+    for symbol in order {
+        let length = match symbol {
+            18 => 1,
+            1 | 2 => 2,
+            _ => 0,
+        };
+        w.put(length, 3);
+    }
+    let mut lengths = vec![0u32; count];
+    for &(symbol, length) in litlen {
+        lengths[symbol] = length;
+    }
+    lengths.push(1); // the distance code
+    let mut at = 0;
+    while at < lengths.len() {
+        let zeros = (lengths[at..].iter().take_while(|&&l| l == 0).count()).min(138);
+        if zeros >= 11 {
+            w.code(0, 1);
+            w.put(zeros as u32 - 11, 7);
+            at += zeros;
+            continue;
+        }
+        assert!(lengths[at] > 0, "short runs of zeros aren't coded here");
+        w.code(if lengths[at] == 1 { 0b10 } else { 0b11 }, 2);
+        at += 1;
+    }
+    w
+}
+
+#[test]
+fn a_stream_cut_short_ends_at_its_end_not_the_limit() {
+    // Literal 0 coded `0`, end of block `1`: past the input, the zero bits
+    // the reader supplies would decode as literals up to the limit.
+    let mut whole = dynamic_header(&[(0, 1), (256, 1)], 257);
+    for _ in 0..10 {
+        whole.code(0, 1);
+    }
+    whole.code(1, 1);
+    assert_eq!(inflate(&whole.finish(), 1 << 20), Ok(vec![0; 10]));
+    let cut = dynamic_header(&[(0, 1), (256, 1)], 257).finish();
+    let started = std::time::Instant::now();
+    assert_eq!(inflate(&cut, 1 << 30), Err(Error::Truncated));
+    assert!(started.elapsed().as_secs() < 2);
+    let mut out = Vec::new();
+    assert_eq!(inflate_into(&cut, &mut out, 1 << 30), Err(Error::Truncated));
+    assert!(
+        out.len() < 1 << 10,
+        "{} bytes decoded past the end",
+        out.len()
+    );
+}
+
+#[test]
+fn a_stream_never_gives_more_than_deflate_can_code() {
+    // Literal 0 (`10`), then matches of 258 at distance 1 in two bits each
+    // (length 285 `0`, distance `0`), then the end (`11`): DEFLATE's most
+    // output a byte, which decodes whole.
+    let mut w = dynamic_header(&[(0, 2), (256, 2), (285, 1)], 286);
+    w.code(0b10, 2);
+    let matches = 4000;
+    for _ in 0..matches {
+        w.code(0, 2);
+    }
+    w.code(0b11, 2);
+    let stream = w.finish();
+    let out = inflate(&stream, usize::MAX).unwrap();
+    assert_eq!(out.len(), 1 + 258 * matches);
+    assert!(out.len() <= 1032 * stream.len());
+    // Cut short, the same stream is refused.
+    let cut = &stream[..stream.len() / 2];
+    assert_eq!(inflate(cut, usize::MAX), Err(Error::Truncated));
+}
+
+#[test]
+fn a_raised_stop_ends_a_decode() {
+    let data = vec![7u8; 4 << 20];
+    let packed = zlib_compress(&data, Level::Fast);
+    let go = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(
+        kinogaki_deflate::zlib_decompress_until(&packed, data.len(), &go).as_ref(),
+        Ok(&data)
+    );
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(
+        kinogaki_deflate::zlib_decompress_until(&packed, data.len(), &stop),
+        Err(Error::Stopped)
+    );
+}

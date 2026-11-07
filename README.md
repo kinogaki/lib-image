@@ -10,8 +10,8 @@ plugins build their codecs on its image and DEFLATE.
 | Crate | Path | What |
 | --- | --- | --- |
 | `kinogaki-image` | crates/image | The shared `Image` (interleaved samples: `U8`, `U16`, `U32`, `F16`, `F32`), exact half-float conversion, `to_rgba8` for display. |
-| `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32. Shared by PNG and OpenEXR's ZIP compression. |
-| `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`) and encode (8/16-bit grey, grey+alpha, RGB, RGBA), with the `sRGB` or `iCCP` chunk saying a display. |
+| `kinogaki-deflate` | crates/deflate | DEFLATE and zlib compression and decompression, CRC-32, Adler-32, bounded for hostile streams (a truncated stream fails at its end, output stays within DEFLATE's 1032:1, a stop flag ends a decode). Shared by PNG, OpenEXR's ZIP compression and FBX. |
+| `kinogaki-png` | crates/png | PNG decode (every color type, 1–16 bits, interlaced, `tRNS`; its chunks read first, so a caller knows what decoding takes) and encode (8/16-bit grey, grey+alpha, RGB, RGBA), with the `sRGB` or `iCCP` chunk saying a display. |
 
 ## The image shape
 

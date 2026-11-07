@@ -1,6 +1,7 @@
 //! Decoding independently written PNGs, round trips, and malformed files.
-use kinogaki_png::{Error, Image, Level, Samples, decode, encode};
+use kinogaki_png::{Error, Image, Level, Png, Samples, decode, encode};
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 fn fixtures() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -139,4 +140,56 @@ fn bad_input_fails_cleanly() {
         bad[at] = (x >> 20) as u8;
         let _ = decode(&bad, 1 << 20);
     }
+}
+
+/// A PNG of `width` × `height` RGBA8 pixels whose image data is `idat`.
+fn rgba_png(width: u32, height: u32, idat: &[u8]) -> Vec<u8> {
+    let mut png = kinogaki_png::SIGNATURE.to_vec();
+    let mut chunk = |kind: &[u8; 4], body: &[u8]| {
+        png.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        png.extend_from_slice(kind);
+        png.extend_from_slice(body);
+        let mut crc = kinogaki_deflate::Crc32::new();
+        crc.update(kind);
+        crc.update(body);
+        png.extend_from_slice(&crc.finish().to_be_bytes());
+    };
+    let mut header = [width.to_be_bytes(), height.to_be_bytes()].concat();
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(b"IHDR", &header);
+    chunk(b"IDAT", idat);
+    chunk(b"IEND", &[]);
+    png
+}
+
+#[test]
+fn what_decoding_takes_is_known_before_it_starts_and_a_cut_stream_fails() {
+    let (width, height) = (2048u32, 2048u32);
+    let rows = vec![0u8; (width as usize * 4 + 1) * height as usize];
+    let packed = kinogaki_deflate::zlib_compress(&rows, Level::Fast);
+    let whole = rgba_png(width, height, &packed);
+    let png = Png::read(&whole).unwrap();
+    assert_eq!(
+        (png.width(), png.height(), png.channels(), png.wide()),
+        (width, height, 4, false)
+    );
+    assert_eq!(
+        (png.compressed(), png.inflated()),
+        (packed.len(), rows.len())
+    );
+    assert!(png.decode(&AtomicBool::new(false)).is_ok());
+    assert_eq!(png.decode(&AtomicBool::new(true)), Err(Error::Stopped));
+    // Cut short, the stream fails where it ends, not at the image's size.
+    let cut = rgba_png(width, height, &packed[..packed.len() / 2]);
+    let started = std::time::Instant::now();
+    assert!(
+        Png::read(&cut)
+            .unwrap()
+            .decode(&AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(started.elapsed().as_secs() < 2);
+    // Sizes past memory's addresses are refused as the chunks are read.
+    let vast = rgba_png(0x7FFF_FFFF, 0x7FFF_FFFF, &packed);
+    assert_eq!(Png::read(&vast).err(), Some(Error::TooLarge));
 }

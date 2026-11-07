@@ -19,6 +19,10 @@ pub use checksum::{Adler32, Crc32, adler32, crc32};
 pub use deflate::Level;
 
 use std::fmt;
+use std::sync::atomic::AtomicBool;
+
+/// A stop flag never raised, for the calls that take none.
+static GO: AtomicBool = AtomicBool::new(false);
 
 /// Why a stream could not be decompressed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,10 +31,13 @@ pub enum Error {
     Truncated,
     /// The stream breaks the format.
     Invalid(&'static str),
-    /// The output would pass the caller's limit.
+    /// The output would pass the caller's limit, or more than DEFLATE can
+    /// give for the input (1032 bytes a byte).
     TooLarge,
     /// The zlib checksum does not match the data.
     Checksum,
+    /// The caller's stop flag was raised.
+    Stopped,
 }
 
 impl fmt::Display for Error {
@@ -40,6 +47,7 @@ impl fmt::Display for Error {
             Error::Invalid(what) => write!(f, "invalid compressed data: {what}"),
             Error::TooLarge => write!(f, "decompressed data exceeds its limit"),
             Error::Checksum => write!(f, "compressed data checksum mismatch"),
+            Error::Stopped => write!(f, "decompression stopped"),
         }
     }
 }
@@ -52,18 +60,19 @@ pub fn deflate(data: &[u8], level: Level) -> Vec<u8> {
 }
 
 /// Decompresses the raw DEFLATE stream at the start of `data`, producing at
-/// most `limit` bytes.
+/// most `limit` bytes. A stream that ends early, or claims more than 1032
+/// bytes for each of its bytes (more than DEFLATE can code), is refused.
 pub fn inflate(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
-    inflate::inflate_into(data, &mut out, limit)?;
+    inflate::inflate_into(data, &mut out, limit, &GO)?;
     Ok(out)
 }
 
 /// Decompresses the raw DEFLATE stream at the start of `data`, appending at
-/// most `limit` bytes in all to `out`; returns how many bytes of `data` the
-/// stream used.
+/// most `limit` bytes in all to `out`, as [`inflate`] does; returns how many
+/// bytes of `data` the stream used.
 pub fn inflate_into(data: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, Error> {
-    inflate::inflate_into(data, out, limit)
+    inflate::inflate_into(data, out, limit, &GO)
 }
 
 /// Compresses `data` as a zlib stream (a two-byte header, DEFLATE, Adler-32).
@@ -85,9 +94,21 @@ pub fn zlib_compress(data: &[u8], level: Level) -> Vec<u8> {
     out
 }
 
-/// Decompresses a zlib stream, producing at most `limit` bytes; the
-/// checksum is verified. Preset dictionaries are not supported.
+/// Decompresses a zlib stream, producing at most `limit` bytes, as
+/// [`inflate`] does; the checksum is verified. Preset dictionaries are not
+/// supported.
 pub fn zlib_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    zlib_decompress_until(data, limit, &GO)
+}
+
+/// [`zlib_decompress`], stopping with [`Error::Stopped`] once `stop` is
+/// raised (it is looked at every megabyte of output): a long decode the
+/// caller may no longer want.
+pub fn zlib_decompress_until(
+    data: &[u8],
+    limit: usize,
+    stop: &AtomicBool,
+) -> Result<Vec<u8>, Error> {
     let header = data.get(..2).ok_or(Error::Truncated)?;
     let (cmf, flg) = (header[0], header[1]);
     if cmf & 0x0F != 8 || cmf >> 4 > 7 || (u16::from(cmf) << 8 | u16::from(flg)) % 31 != 0 {
@@ -97,7 +118,7 @@ pub fn zlib_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         return Err(Error::Invalid("zlib preset dictionary"));
     }
     let mut out = Vec::new();
-    let used = inflate::inflate_into(&data[2..], &mut out, limit)?;
+    let used = inflate::inflate_into(&data[2..], &mut out, limit, stop)?;
     let trailer = data.get(2 + used..2 + used + 4).ok_or(Error::Truncated)?;
     if u32::from_be_bytes(trailer.try_into().expect("four bytes")) != adler32(&out) {
         return Err(Error::Checksum);

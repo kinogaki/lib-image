@@ -6,7 +6,9 @@
 //! RGB or RGBA, 8 or 16 bits per sample, straight alpha. [`decode`] reads
 //! every standard PNG — greyscale, truecolor, indexed, with or without
 //! alpha, 1 to 16 bits per sample, interlaced or not, `tRNS` transparency —
-//! keeping the file's channels and sample size; [`encode`] writes any
+//! keeping the file's channels and sample size; [`Png`] reads its chunks
+//! first, so a caller knows what decoding takes before it decodes, and
+//! decodes until a stop flag is raised; [`encode`] writes any
 //! [`Image`] with a per-row adaptive filter, [`encode_tagged`] saying which display
 //! its code values are for, [`display_tag`] reading that back; decoding ignores
 //! color management chunks (samples are taken as sRGB). Chunk CRCs and the zlib checksum
@@ -24,7 +26,7 @@ mod decode;
 mod encode;
 mod filter;
 
-pub use decode::{ReadTag, decode, display_tag};
+pub use decode::{Png, ReadTag, decode, display_tag};
 pub use encode::{DisplayTag, encode, encode_tagged};
 pub use kinogaki_deflate::Level;
 pub use kinogaki_image::{Image, Samples};
@@ -53,6 +55,8 @@ pub enum Error {
     /// The image given to [`encode`] has samples PNG cannot hold (32-bit
     /// integers or floats).
     SampleType,
+    /// The caller's stop flag was raised.
+    Stopped,
 }
 
 impl fmt::Display for Error {
@@ -65,6 +69,7 @@ impl fmt::Display for Error {
             Error::Compressed(e) => write!(f, "PNG image data: {e}"),
             Error::Size => write!(f, "image samples do not match its size and channels"),
             Error::SampleType => write!(f, "PNG holds 8 or 16-bit integer samples only"),
+            Error::Stopped => write!(f, "PNG decoding stopped"),
         }
     }
 }
@@ -73,6 +78,9 @@ impl std::error::Error for Error {}
 
 impl From<kinogaki_deflate::Error> for Error {
     fn from(e: kinogaki_deflate::Error) -> Self {
-        Error::Compressed(e)
+        match e {
+            kinogaki_deflate::Error::Stopped => Error::Stopped,
+            e => Error::Compressed(e),
+        }
     }
 }
