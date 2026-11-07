@@ -13,6 +13,9 @@ kinogaki-deflate/lib test inflate::tests::malformed_streams_fail
 kinogaki-deflate/lib test inflate::tests::overlapping_copies
 kinogaki-deflate/lib test inflate::tests::stored_and_fixed_blocks
 kinogaki-deflate/lib test tables::tests::symbol_tables_invert_the_bases
+kinogaki-deflate/streams test a_raised_stop_ends_a_decode
+kinogaki-deflate/streams test a_stream_cut_short_ends_at_its_end_not_the_limit
+kinogaki-deflate/streams test a_stream_never_gives_more_than_deflate_can_code
 kinogaki-deflate/streams test compresses_as_well_as_zlib
 kinogaki-deflate/streams test every_truncation_and_corruption_fails_cleanly
 kinogaki-deflate/streams test limits_and_trailing_data
@@ -32,6 +35,7 @@ kinogaki-png/images test bad_input_fails_cleanly
 kinogaki-png/images test every_format_decodes_as_the_specification_says
 kinogaki-png/images test every_layout_round_trips
 kinogaki-png/images test round_trips
+kinogaki-png/images test what_decoding_takes_is_known_before_it_starts_and_a_cut_stream_fails
 kinogaki-png/lib test encode::tests::a_tag_reads_back_and_leaves_the_pixels
 kinogaki-png/lib test filter::tests::every_filter_inverts
 kinogaki-png/lib test filter::tests::paeth_prefers_a_then_b
